@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Виртуальные окружения и IDE
+.venv/
+venv/
+.idea/
+.vscode/
+
+# Данные проектов и результаты
+temp/*
+output/*
+logs/*
+!temp/.gitkeep
+!output/.gitkeep
+!logs/.gitkeep
+
+# ОС
+Thumbs.db
+.DS_Store
+
