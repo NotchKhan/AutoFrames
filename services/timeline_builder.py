@@ -23,8 +23,16 @@ def build_timeline(
             issues.append(ValidationIssue(str(exc), source.original_filename))
             continue
         source_key = str(source.stored_path)
-        overridden = source_key in overrides or source.original_filename in overrides
-        end_ms = overrides.get(source_key, overrides.get(source.original_filename, timestamp.milliseconds))
+        safe_key = source.stored_path.name
+        overridden = (
+            safe_key in overrides
+            or source_key in overrides
+            or source.original_filename in overrides
+        )
+        end_ms = overrides.get(
+            safe_key,
+            overrides.get(source_key, overrides.get(source.original_filename, timestamp.milliseconds)),
+        )
         if end_ms <= 0:
             issues.append(ValidationIssue(
                 f"Файл «{source.original_filename}» заканчивается в {format_ms(end_ms)}. "

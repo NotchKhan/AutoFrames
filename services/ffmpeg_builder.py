@@ -70,7 +70,7 @@ def clip_command(
         "-vf", video_filter(settings, effect, frames, duration_ms),
         "-frames:v", str(frames), "-an", "-c:v", "libx264",
         "-preset", settings.preset, "-crf", str(settings.crf),
-        "-pix_fmt", "yuv420p", "-r", str(settings.fps),
+        "-pix_fmt", "yuv420p", "-r", str(settings.fps), "-fps_mode", "cfr",
         "-video_track_timescale", "90000", str(output),
     ]
 

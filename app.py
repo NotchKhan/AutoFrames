@@ -15,16 +15,17 @@ from config import (
     VIDEO_SIZES,
 )
 from models.render import AudioSettings, RenderSettings, VideoSettings
-from models.timeline import SourceImage, ValidationIssue
+from models.timeline import SourceImage, TimelineItem, ValidationIssue
 from services.image_processor import ImageValidationError, create_thumbnail, validate_image
 from services.media_probe import MediaProbeError, check_media_tools, probe_audio_duration_ms
 from services.render_controller import RenderController
+from services.resource_estimator import disk_estimate
+from services.settings_validator import validate_render_settings
 from services.timeline_builder import build_timeline
-from services.timeline_validator import validate_timeline
-from services.video_renderer import VideoRenderer
-from services.workspace_manager import WorkspaceManager
-from utils.file_utils import human_file_size, image_data_uri
-from utils.process_utils import log_tail
+from services.timeline_validator import validate_timeline, validate_timeline_for_fps
+from services.video_renderer import VideoRenderer, build_render_plan
+from services.workspace_manager import WorkspaceLimitError, WorkspaceManager
+from utils.file_utils import friendly_os_error, human_file_size, image_data_uri
 from utils.time_utils import format_ms, parse_display_time
 
 
@@ -41,6 +42,14 @@ def cached_validate_image(path_text: str, filename: str, modified_ns: int) -> tu
 def cached_audio_duration(path_text: str, modified_ns: int, ffprobe_text: str) -> int:
     del modified_ns
     return probe_audio_duration_ms(Path(path_text), Path(ffprobe_text))
+
+
+@st.cache_data(show_spinner=False, ttl=30)
+def cached_media_tools(
+    ffmpeg_text: str | None,
+    ffprobe_text: str | None,
+) -> tuple[Path | None, Path | None, list[str]]:
+    return check_media_tools(ffmpeg_text, ffprobe_text)
 
 
 def initialize_state() -> None:
@@ -101,7 +110,7 @@ def end_mode_widget(audio_ms: int, timeline_ms: int) -> str:
     return options[label]
 
 
-def timeline_editor(items: list, workspace: WorkspaceManager) -> None:
+def timeline_editor(items: list[TimelineItem], workspace: WorkspaceManager) -> None:
     st.subheader("4. Таблица таймлайна")
     st.caption("Измените время окончания или отметьте кадры для удаления, затем нажмите «Применить».")
     rows: list[dict[str, object]] = []
@@ -115,7 +124,7 @@ def timeline_editor(items: list, workspace: WorkspaceManager) -> None:
         except (OSError, ImageValidationError):
             preview = ""
         rows.append({
-            "ID": str(item.stored_path),
+            "ID": item.stored_path.name,
             "№": item.index,
             "Миниатюра": preview,
             "Исходное имя": item.original_filename,
@@ -197,28 +206,37 @@ def result_panel(controller: RenderController, workspace: WorkspaceManager) -> N
         return
     if result.cancelled:
         st.warning(result.error or "Рендеринг отменён.")
+        for warning in result.warnings:
+            st.warning(warning)
         return
     if not result.success or result.output_path is None:
         st.error(result.error or "Рендеринг завершился ошибкой.")
-        log_path = workspace.log_dir / "ffmpeg.log"
-        tail = log_tail(log_path)
-        if tail:
-            with st.expander("Последние строки журнала FFmpeg"):
-                st.code(tail, language=None)
+        for warning in result.warnings:
+            st.warning(warning)
+        st.caption(
+            "Технический stderr не показывается в интерфейсе. Полный журнал сохранён "
+            f"в logs/{workspace.project_id}/ffmpeg.log."
+        )
         return
-    st.success(f"Видео готово: {result.output_path}")
+    st.success(f"Видео готово: output/{workspace.project_id}/{result.output_path.name}")
     for warning in result.warnings:
         st.warning(warning)
     info = result.media_info
     st.video(str(result.output_path))
     st.table({
-        "Параметр": ["Длительность", "Разрешение", "FPS", "Видеокодек", "Аудиокодек", "Размер"],
+        "Параметр": [
+            "Длительность", "Разрешение", "FPS", "Видеокодек",
+            "Режим FPS", "Аудиокодек", "Pixel format", "Контейнер", "Размер",
+        ],
         "Значение": [
             format_ms(int(info.get("duration_ms", 0))),
             f"{info.get('width', 0)}×{info.get('height', 0)}",
             f"{float(info.get('fps', 0)):.3f}",
             str(info.get("video_codec", "")),
+            "постоянный (CFR)" if info.get("is_cfr") else "переменный/не определён",
             str(info.get("audio_codec", "")),
+            str(info.get("pixel_format", "")),
+            str(info.get("container", "")),
             human_file_size(int(info.get("size_bytes", 0))),
         ],
     })
@@ -227,7 +245,10 @@ def result_panel(controller: RenderController, workspace: WorkspaceManager) -> N
             "Скачать MP4", video_file, file_name=result.output_path.name, mime="video/mp4"
         )
     if st.button("Открыть папку output"):
-        subprocess.Popen(["explorer.exe", str(result.output_path.parent)], shell=False)
+        try:
+            subprocess.Popen(["explorer.exe", str(result.output_path.parent)], shell=False)
+        except OSError:
+            st.error("Не удалось открыть Проводник. Откройте папку output вручную.")
 
 
 initialize_state()
@@ -247,15 +268,20 @@ with st.sidebar:
     ffprobe_custom = st.text_input("Путь к ffprobe.exe (необязательно)", key="ffprobe_custom")
     st.caption(f"ID проекта: {workspace.project_id}")
     if st.button("Создать новый проект", disabled=controller.is_running):
-        workspace.cleanup_project(keep_output=True)
-        st.session_state.clear()
-        st.rerun()
+        try:
+            workspace.cleanup_project(keep_output=True)
+        except OSError:
+            st.error("Не удалось очистить временные файлы. Закройте программы, использующие их.")
+        else:
+            st.session_state.clear()
+            st.rerun()
 
-ffmpeg_path, ffprobe_path, tool_errors = check_media_tools(
+ffmpeg_path, ffprobe_path, tool_errors = cached_media_tools(
     ffmpeg_custom or None, ffprobe_custom or None
 )
 
 st.header("1. Загрузка изображений")
+st.caption("До 1000 изображений; один файл — до 100 МБ, общий объём — до 2 ГБ.")
 source_mode = st.radio(
     "Источник изображений", ["Загрузить файлы", "Локальная папка"], horizontal=True
 )
@@ -271,6 +297,8 @@ if source_mode == "Загрузить файлы":
         try:
             sources = workspace.save_uploaded_images(uploaded_images)
         except OSError as exc:
+            load_issues.append(ValidationIssue(friendly_os_error("Сохранение изображений", exc)))
+        except (WorkspaceLimitError, ValueError) as exc:
             load_issues.append(ValidationIssue(f"Не удалось сохранить изображения: {exc}"))
 else:
     folder_text = st.text_input("Полный путь к папке с изображениями")
@@ -279,16 +307,19 @@ else:
             sources = workspace.import_folder(Path(folder_text))
             if not sources:
                 load_issues.append(ValidationIssue("В выбранной папке нет поддерживаемых изображений."))
-        except (OSError, ValueError) as exc:
+        except OSError as exc:
+            load_issues.append(ValidationIssue(friendly_os_error("Чтение папки", exc)))
+        except ValueError as exc:
             load_issues.append(ValidationIssue(f"Не удалось прочитать папку: {exc}"))
 
 if st.session_state.removed_images:
-    sources = [s for s in sources if str(s.stored_path) not in st.session_state.removed_images]
+    sources = [s for s in sources if s.stored_path.name not in st.session_state.removed_images]
     if st.button("Вернуть удалённые изображения"):
         st.session_state.removed_images = set()
         st.rerun()
 
 st.header("2. Загрузка аудио")
+st.caption("Один аудиофайл размером до 200 МБ.")
 uploaded_audio = st.file_uploader(
     "Выберите один файл с полной озвучкой",
     type=[extension.lstrip(".") for extension in sorted(AUDIO_EXTENSIONS)],
@@ -302,15 +333,17 @@ if uploaded_audio is not None:
         try:
             audio_path = workspace.save_uploaded_audio(uploaded_audio)
         except OSError as exc:
+            load_issues.append(ValidationIssue(friendly_os_error("Сохранение аудио", exc)))
+        except (WorkspaceLimitError, ValueError) as exc:
             load_issues.append(ValidationIssue(f"Не удалось сохранить аудио: {exc}"))
 
 st.header("3. Проверка временных меток и файлов")
 items, parse_issues = build_timeline(sources, st.session_state.overrides_ms)
 validation_issues = validate_timeline(items) if sources else [ValidationIssue("Загрузите хотя бы одно изображение.")]
-valid_paths = {str(item.stored_path) for item in items}
-invalid_sources = [source for source in sources if str(source.stored_path) not in valid_paths]
+valid_paths = {item.stored_path.name for item in items}
+invalid_sources = [source for source in sources if source.stored_path.name not in valid_paths]
 if invalid_sources:
-    labels = {str(source.stored_path): source.original_filename for source in invalid_sources}
+    labels = {source.stored_path.name: source.original_filename for source in invalid_sources}
     selected_invalid = st.multiselect(
         "Проблемные изображения можно удалить из проекта",
         options=list(labels),
@@ -350,6 +383,9 @@ else:
 
 if items:
     timeline_editor(items, workspace)
+else:
+    st.header("4. Таблица таймлайна")
+    st.caption("Появится после добавления хотя бы одного корректного изображения.")
 
 st.header("5. Настройки видео")
 width, height, settings_errors = size_settings()
@@ -424,12 +460,40 @@ audio_settings = AudioSettings(
 )
 render_settings = RenderSettings(video_settings, audio_settings, end_mode)  # type: ignore[arg-type]
 
-critical_errors = bool(all_issues or settings_errors)
+render_setting_issues = validate_render_settings(render_settings)
+fps_issues = validate_timeline_for_fps(items, int(fps)) if items else []
+critical_errors = bool(all_issues or settings_errors or render_setting_issues or fps_issues)
 for error in settings_errors:
     st.error(error)
+issue_messages(render_setting_issues + fps_issues)
 if end_mode == "error" and audio_duration_ms is not None and items and items[-1].end_ms > audio_duration_ms:
     critical_errors = True
     st.error("Выбран критический режим: исправьте таймлайн перед рендерингом.")
+
+if audio_duration_ms is not None and items and not render_setting_issues:
+    try:
+        _segments, _offset, estimated_duration_ms, _pad = build_render_plan(
+            items, audio_duration_ms, render_settings
+        )
+        resources = disk_estimate(
+            workspace.root, items, video_settings, estimated_duration_ms
+        )
+        disk_columns = st.columns(2)
+        disk_columns[0].metric(
+            "Оценка места для рендера", human_file_size(resources.required_bytes)
+        )
+        disk_columns[1].metric("Свободно на диске", human_file_size(resources.free_bytes))
+        if not resources.sufficient:
+            critical_errors = True
+            st.error(
+                "Свободного места может не хватить. Освободите диск либо уменьшите "
+                "разрешение, качество или длительность."
+            )
+        else:
+            st.caption("Оценка включает резерв 512 МБ и промежуточные клипы.")
+    except ValueError as exc:
+        critical_errors = True
+        st.error(str(exc))
 
 st.header("10. Предпросмотр")
 preview_columns = st.columns(3)
@@ -442,8 +506,7 @@ start_ms = round(preview_start * 1000)
 end_ms = round(preview_end_custom * 1000) if preview_end_custom > 0 else start_ms + preview_duration * 1000
 
 can_render = not critical_errors and not controller.is_running and audio_path is not None and audio_duration_ms is not None
-button_columns = st.columns(2)
-if button_columns[0].button("Создать предпросмотр", disabled=not can_render):
+if st.button("Создать предпросмотр", disabled=not can_render):
     assert ffmpeg_path is not None and ffprobe_path is not None and audio_path is not None and audio_duration_ms is not None
     preview_settings = replace(render_settings, preview_start_ms=start_ms, preview_end_ms=end_ms)
     renderer = VideoRenderer(ffmpeg_path, ffprobe_path, workspace)
@@ -455,7 +518,7 @@ if button_columns[0].button("Создать предпросмотр", disabled=
 
 st.header("11. Финальный рендеринг")
 keep_debug = st.checkbox("Сохранять промежуточные файлы для отладки", value=False)
-if button_columns[1].button("Собрать финальное видео", type="primary", disabled=not can_render):
+if st.button("Собрать финальное видео", type="primary", disabled=not can_render):
     assert ffmpeg_path is not None and ffprobe_path is not None and audio_path is not None and audio_duration_ms is not None
     final_settings = replace(render_settings, keep_debug_files=keep_debug)
     renderer = VideoRenderer(ffmpeg_path, ffprobe_path, workspace)

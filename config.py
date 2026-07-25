@@ -7,6 +7,13 @@ APP_TITLE = "Автоматическая сборка видео из кадр�
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"}
 SYNC_TOLERANCE_MS = 50
+MAX_IMAGE_FILES = 1_000
+MAX_IMAGE_FILE_BYTES = 100 * 1024 * 1024
+MAX_TOTAL_IMAGE_BYTES = 2 * 1024 * 1024 * 1024
+MAX_AUDIO_FILE_BYTES = 200 * 1024 * 1024
+MAX_IMAGE_PIXELS = 100_000_000
+MAX_VIDEO_DIMENSION = 8_192
+MIN_FREE_RESERVE_BYTES = 512 * 1024 * 1024
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 TEMP_ROOT = PROJECT_ROOT / "temp"
@@ -24,4 +31,3 @@ QUALITY_PRESETS: dict[str, tuple[str, int]] = {
     "Сбалансированный": ("medium", 20),
     "Высокое качество": ("slow", 18),
 }
-

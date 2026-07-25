@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 from decimal import Decimal, InvalidOperation
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +28,39 @@ def resolve_binary(name: str, explicit_path: str | Path | None = None) -> Path |
         if candidate.is_file():
             return candidate.resolve()
     found = shutil.which(name)
-    return Path(found).resolve() if found else None
+    if found:
+        return Path(found).resolve()
+    local_root = Path(os.environ.get("LOCALAPPDATA", "")) / "AutoVideoBuilder"
+    executable = f"{name}.exe" if os.name == "nt" else name
+    if local_root.is_dir():
+        candidates = sorted(local_root.glob(f"ffmpeg*/**/{executable}"), reverse=True)
+        if candidates:
+            return candidates[0].resolve()
+    return None
+
+
+def _binary_is_usable(path: Path, expected_name: str) -> bool:
+    creation_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    try:
+        completed = subprocess.run(
+            [str(path), "-version"],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            shell=False,
+            creationflags=creation_flags,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    first_line = (completed.stdout or completed.stderr).splitlines()
+    return (
+        completed.returncode == 0
+        and bool(first_line)
+        and f"{expected_name} version" in first_line[0].lower()
+    )
 
 
 def check_media_tools(
@@ -37,11 +70,21 @@ def check_media_tools(
     ffmpeg = resolve_binary("ffmpeg", ffmpeg_path)
     ffprobe = resolve_binary("ffprobe", ffprobe_path)
     errors: list[str] = []
-    if ffmpeg is None:
+    if ffmpeg is not None and not _binary_is_usable(ffmpeg, "ffmpeg"):
+        errors.append(
+            "Указанный ffmpeg не прошёл проверку запуска. Выберите настоящий ffmpeg.exe из папки bin."
+        )
+        ffmpeg = None
+    elif ffmpeg is None:
         errors.append(
             "FFmpeg не найден. Установите FFmpeg и добавьте папку bin в PATH либо укажите путь в интерфейсе."
         )
-    if ffprobe is None:
+    if ffprobe is not None and not _binary_is_usable(ffprobe, "ffprobe"):
+        errors.append(
+            "Указанный ffprobe не прошёл проверку запуска. Выберите настоящий ffprobe.exe из папки bin."
+        )
+        ffprobe = None
+    elif ffprobe is None:
         errors.append(
             "ffprobe не найден. Он обычно находится в той же папке bin, что и FFmpeg."
         )
@@ -49,9 +92,12 @@ def check_media_tools(
 
 
 def probe_media(path: Path, ffprobe_path: Path) -> dict[str, Any]:
+    if not path.is_file() or path.stat().st_size <= 0:
+        raise MediaProbeError(f"Медиафайл «{path.name}» отсутствует или пуст.")
     command = [
         str(ffprobe_path), "-v", "error", "-show_entries",
-        "format=duration,size:stream=index,codec_type,codec_name,width,height,r_frame_rate,duration",
+        "format=duration,size,format_name:stream=index,codec_type,codec_name,width,height,"
+        "pix_fmt,r_frame_rate,avg_frame_rate,duration",
         "-of", "json", str(path),
     ]
     creation_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
@@ -63,8 +109,10 @@ def probe_media(path: Path, ffprobe_path: Path) -> dict[str, Any]:
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise MediaProbeError(f"Не удалось запустить ffprobe для файла «{path.name}»: {exc}") from exc
     if completed.returncode != 0:
-        detail = completed.stderr.strip().splitlines()[-1] if completed.stderr.strip() else "неизвестная ошибка"
-        raise MediaProbeError(f"ffprobe не смог прочитать файл «{path.name}»: {detail}")
+        raise MediaProbeError(
+            f"ffprobe не смог прочитать файл «{path.name}». Файл может быть повреждён "
+            "или иметь неподдерживаемый формат. Пересохраните его и повторите проверку."
+        )
     try:
         return json.loads(completed.stdout)
     except json.JSONDecodeError as exc:
@@ -93,11 +141,16 @@ def summarize_output(path: Path, ffprobe_path: Path) -> dict[str, object]:
     streams = data.get("streams", [])
     video = next((s for s in streams if s.get("codec_type") == "video"), {})
     audio = next((s for s in streams if s.get("codec_type") == "audio"), {})
-    rate = str(video.get("r_frame_rate", "0/1"))
+    average_rate = str(video.get("avg_frame_rate") or "0/1")
+    real_rate = str(video.get("r_frame_rate") or "0/1")
+    rate = average_rate if average_rate != "0/1" else real_rate
     try:
-        numerator, denominator = rate.split("/", maxsplit=1)
-        fps = float(numerator) / float(denominator)
+        average_fps = float(Fraction(average_rate))
+        real_fps = float(Fraction(real_rate))
+        fps = average_fps if average_fps > 0 else real_fps
     except (ValueError, ZeroDivisionError):
+        average_fps = 0.0
+        real_fps = 0.0
         fps = 0.0
     duration_raw = data.get("format", {}).get("duration", "0")
     return {
@@ -107,5 +160,12 @@ def summarize_output(path: Path, ffprobe_path: Path) -> dict[str, object]:
         "fps": fps,
         "video_codec": video.get("codec_name", "неизвестно"),
         "audio_codec": audio.get("codec_name", "нет"),
+        "pixel_format": video.get("pix_fmt", "неизвестно"),
+        # MP4 timescale округляет общую длительность на несколько тиков, поэтому
+        # математически одинаковые CFR-потоки могут иметь слегка разные дроби.
+        "is_cfr": real_fps > 0 and abs(average_fps - real_fps) <= 0.001,
+        "has_video": bool(video),
+        "has_audio": bool(audio),
+        "container": data.get("format", {}).get("format_name", "неизвестно"),
         "size_bytes": path.stat().st_size,
     }

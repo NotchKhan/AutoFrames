@@ -15,7 +15,9 @@ class ProcessCancelled(RuntimeError):
 class ProcessExecutionError(RuntimeError):
     def __init__(self, command_name: str, returncode: int, log_path: Path) -> None:
         super().__init__(
-            f"{command_name} завершился с кодом {returncode}. Подробности сохранены в журнале {log_path}."
+            f"{command_name} не смог завершить операцию (код {returncode}). "
+            "Проверьте свободное место, права записи и входные файлы. "
+            "Технические подробности сохранены в журнале проекта."
         )
         self.returncode = returncode
         self.log_path = log_path

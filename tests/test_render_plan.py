@@ -45,3 +45,27 @@ def test_trim_video_and_preview_range() -> None:
 def test_error_mode_rejects_long_video() -> None:
     with pytest.raises(ValueError, match="Исправьте таймлайн"):
         build_render_plan(items(), 8_000, settings("error"))
+
+
+def test_trim_audio_to_timeline() -> None:
+    segments, offset, duration, pad = build_render_plan(
+        items(), 12_000, settings("trim_to_timeline")
+    )
+    assert len(segments) == 2
+    assert (offset, duration, pad) == (0, 10_000, False)
+
+
+def test_pad_silence_after_audio() -> None:
+    _segments, _offset, duration, pad = build_render_plan(
+        items(), 8_000, settings("pad_silence")
+    )
+    assert duration == 10_000
+    assert pad
+
+
+def test_tolerance_extends_last_frame_without_gap() -> None:
+    segments, _offset, duration, _pad = build_render_plan(
+        items(), 10_040, settings("extend_last")
+    )
+    assert duration == 10_040
+    assert segments[-1].end_ms == 10_040

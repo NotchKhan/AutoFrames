@@ -38,10 +38,10 @@ class RenderController:
             self._status.logs.append(message)
 
     def start(self, render_call: Callable[..., RenderResult], *args: Any, **kwargs: Any) -> None:
-        if self.is_running:
-            raise RuntimeError("Рендеринг уже выполняется.")
-        self.cancel_event.clear()
         with self._lock:
+            if self._status.running or (self._thread is not None and self._thread.is_alive()):
+                raise RuntimeError("Рендеринг уже выполняется.")
+            self.cancel_event.clear()
             self._status = RenderStatus(stage="Проверка файлов", running=True)
 
         def worker() -> None:

@@ -12,9 +12,12 @@ from models.render import RenderResult, RenderSettings
 from models.timeline import TimelineItem
 from services.ffmpeg_builder import clip_command, concat_command, mux_command
 from services.image_processor import create_black_frame, prepare_image
-from services.media_probe import summarize_output
+from services.media_probe import MediaProbeError, summarize_output
+from services.resource_estimator import disk_estimate
+from services.settings_validator import validate_render_settings
+from services.timeline_validator import validate_timeline, validate_timeline_for_fps
 from services.workspace_manager import WorkspaceManager
-from utils.file_utils import human_file_size
+from utils.file_utils import friendly_os_error, human_file_size
 from utils.process_utils import ProcessCancelled, ProcessExecutionError, run_process
 from utils.time_utils import frame_index, format_ms
 
@@ -130,9 +133,32 @@ class VideoRenderer:
         warnings: list[str] = []
         try:
             callback("Проверка файлов", 0, len(items), "Построение плана рендеринга")
+            if audio_duration_ms <= 0:
+                raise ValueError("Длительность аудио должна быть больше нуля.")
+            issues = (
+                validate_render_settings(settings)
+                + validate_timeline(items)
+                + validate_timeline_for_fps(items, settings.video.fps)
+            )
+            if issues:
+                raise ValueError(issues[0].message)
+            output_path = self.workspace.output_path(output_name)
+            self.workspace.require_owned_path(audio_path, self.workspace.uploads_dir)
+            for item in items:
+                self.workspace.require_owned_path(item.stored_path, self.workspace.uploads_dir)
             segments, audio_offset, requested_duration_ms, pad_silence = build_render_plan(
                 items, audio_duration_ms, settings
             )
+            resources = disk_estimate(
+                self.workspace.root, list(items), settings.video, requested_duration_ms
+            )
+            if not resources.sufficient:
+                raise ValueError(
+                    "Недостаточно свободного места для безопасного рендеринга. "
+                    f"Требуется примерно {human_file_size(resources.required_bytes)}, "
+                    f"доступно {human_file_size(resources.free_bytes)}. "
+                    "Освободите место или уменьшите разрешение/длительность."
+                )
             self.workspace.clear_intermediates()
             fps = settings.video.fps
             total_frames = frame_index(requested_duration_ms, fps)
@@ -145,13 +171,17 @@ class VideoRenderer:
                 last = frame_index(segment.end_ms, fps)
                 frames = last - first
                 if frames <= 0:
-                    warnings.append(
-                        f"Кадр «{segment.original_filename}» короче одного кадра при {fps} FPS и был пропущен."
+                    raise ValueError(
+                        f"Кадр «{segment.original_filename}» короче одного физического кадра "
+                        f"при {fps} FPS. Увеличьте его длительность: пропуск нарушил бы синхронизацию."
                     )
-                    continue
                 quantized.append((segment, frames, first))
             if not quantized:
                 raise ValueError("После привязки к выбранному FPS не осталось кадров для рендеринга.")
+            if sum(frames for _segment, frames, _first in quantized) != total_frames:
+                raise ValueError(
+                    "После привязки таймлайна к FPS возник разрыв. Исправьте слишком короткие кадры."
+                )
 
             callback("Подготовка изображений", 0, len(quantized), "Обработка EXIF и масштаба")
             prepared_by_source: dict[Path | None, Path] = {}
@@ -209,7 +239,6 @@ class VideoRenderer:
             )
             callback("Объединение видеоклипов", 1, 1, "Видеоряд объединён")
 
-            output_path = self.workspace.output_dir / output_name
             temporary_output = self.workspace.render_dir / (output_path.stem + ".partial.mp4")
             actual_target_ms = round(total_frames * 1000 / fps)
             audio_remaining = max(0, audio_duration_ms - audio_offset)
@@ -222,38 +251,96 @@ class VideoRenderer:
                 ),
                 log_path, cancel,
             )
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            temporary_output.replace(output_path)
             callback("Добавление аудио", 1, 1, "Аудио добавлено без изменения скорости")
 
             callback("Финальная проверка", 0, 1, "Проверка MP4 через ffprobe")
-            media_info = summarize_output(output_path, self.ffprobe)
+            media_info = summarize_output(temporary_output, self.ffprobe)
             mismatch = abs(int(media_info["duration_ms"]) - actual_target_ms)
             allowed = max(2 * 1000 / fps, SYNC_TOLERANCE_MS)
             if mismatch > allowed:
                 warnings.append(
                     f"Фактическая длительность отличается от ожидаемой на {format_ms(mismatch)}."
                 )
+            fatal_media_errors: list[str] = []
+            if not media_info["has_video"]:
+                fatal_media_errors.append("не найден видеопоток")
+            if not media_info["has_audio"]:
+                fatal_media_errors.append("не найден аудиопоток")
             if media_info["video_codec"] != "h264":
-                warnings.append("Итоговый видеокодек отличается от H.264.")
+                fatal_media_errors.append("видеокодек не H.264")
             if media_info["audio_codec"] != "aac":
-                warnings.append("Итоговый аудиокодек отличается от AAC.")
+                fatal_media_errors.append("аудиокодек не AAC")
+            if media_info["pixel_format"] != "yuv420p":
+                fatal_media_errors.append("pixel format не yuv420p")
+            if not media_info["is_cfr"]:
+                fatal_media_errors.append("частота кадров не является постоянной")
+            if "mp4" not in str(media_info["container"]).split(","):
+                fatal_media_errors.append("контейнер не MP4")
+            if (
+                media_info["width"] != settings.video.width
+                or media_info["height"] != settings.video.height
+            ):
+                fatal_media_errors.append("разрешение не совпадает с настройками")
+            if abs(float(media_info["fps"]) - settings.video.fps) > 0.01:
+                fatal_media_errors.append("FPS не совпадает с настройками")
+            if fatal_media_errors:
+                raise ValueError(
+                    "Финальная проверка MP4 не пройдена: "
+                    + "; ".join(fatal_media_errors)
+                    + ". Подробности сохранены в журнале проекта."
+                )
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary_output.replace(output_path)
             if output_name == "final_video.mp4":
                 # Уникальная копия остаётся в каталоге проекта, а этот атомарно
                 # обновляемый файл выполняет обещанный простой путь output/final_video.mp4.
                 latest_temporary = OUTPUT_ROOT / f".{self.workspace.project_id}.latest.partial.mp4"
-                shutil.copy2(output_path, latest_temporary)
-                latest_temporary.replace(OUTPUT_ROOT / "final_video.mp4")
+                try:
+                    shutil.copy2(output_path, latest_temporary)
+                    latest_temporary.replace(OUTPUT_ROOT / "final_video.mp4")
+                except OSError:
+                    latest_temporary.unlink(missing_ok=True)
+                    warnings.append(
+                        "Не удалось обновить копию output/final_video.mp4, но уникальный "
+                        "файл проекта успешно создан и проверен."
+                    )
             callback(
                 "Финальная проверка", 1, 1,
                 f"Готово: {format_ms(int(media_info['duration_ms']))}, {human_file_size(output_path.stat().st_size)}",
             )
             if not settings.keep_debug_files:
-                self.workspace.clear_intermediates()
-            callback("Готово", 1, 1, str(output_path))
+                try:
+                    self.workspace.clear_intermediates()
+                except (OSError, ValueError):
+                    warnings.append(
+                        "Видео готово, но не удалось полностью очистить промежуточные файлы. "
+                        "Закройте использующие их программы и создайте новый проект."
+                    )
+            callback("Готово", 1, 1, f"output/{self.workspace.project_id}/{output_name}")
             return RenderResult(True, output_path, warnings=warnings, media_info=media_info)
         except ProcessCancelled:
-            self.workspace.clear_intermediates()
-            return RenderResult(False, cancelled=True, error="Рендеринг отменён пользователем.")
-        except (ProcessExecutionError, OSError, ValueError) as exc:
-            return RenderResult(False, error=str(exc), warnings=warnings)
+            try:
+                self.workspace.clear_intermediates()
+            except (OSError, ValueError):
+                warnings.append("Не удалось полностью очистить промежуточные файлы после отмены.")
+            return RenderResult(
+                False,
+                cancelled=True,
+                error="Рендеринг отменён пользователем.",
+                warnings=warnings,
+            )
+        except (ProcessExecutionError, MediaProbeError, OSError, ValueError) as exc:
+            if not settings.keep_debug_files:
+                try:
+                    self.workspace.clear_intermediates()
+                except (OSError, ValueError):
+                    warnings.append(
+                        "Не удалось полностью очистить промежуточные файлы после ошибки. "
+                        "Закройте использующие их программы и создайте новый проект."
+                    )
+            message = (
+                friendly_os_error("Рендеринг", exc)
+                if isinstance(exc, OSError)
+                else str(exc)
+            )
+            return RenderResult(False, error=message, warnings=warnings)
