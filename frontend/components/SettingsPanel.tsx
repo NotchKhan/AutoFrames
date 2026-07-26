@@ -52,7 +52,7 @@ export function SettingsPanel({ value, timeline, disabled, onChange, onRender }:
           <span className="eyebrow">Шаг 3</span>
           <h2 id="settings-title">Настройки видео</h2>
         </div>
-        <span className="format-hint">H.264 · AAC · MP4</span>
+        <span className="format-hint">Гибкие параметры</span>
       </div>
 
       <div className="settings-groups">
@@ -208,7 +208,7 @@ export function SettingsPanel({ value, timeline, disabled, onChange, onRender }:
       </div>
 
       <div className="panel-actions render-actions">
-        <p className="muted">Рендер выполняется на backend-сервере. Страницу можно оставить открытой для наблюдения.</p>
+        <p className="muted">После запуска вы сможете следить за каждым этапом обработки.</p>
         <button type="button" className="primary-button render-button" disabled={disabled || !timeline.is_valid} onClick={onRender}>
           Запустить рендеринг
           <span aria-hidden="true">→</span>

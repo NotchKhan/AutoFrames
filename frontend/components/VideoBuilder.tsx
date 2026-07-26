@@ -66,7 +66,7 @@ export function VideoBuilder() {
 
   const renderActive = status !== null && ["queued", "rendering", "cancelling"].includes(status.status);
   const busy = phase === "uploading" || renderActive;
-  const currentStep = phase === "result" ? 4 : renderActive ? 4 : timeline ? 3 : images.length || audio ? 1 : 0;
+  const currentStep = phase === "result" || renderActive ? 3 : timeline ? 2 : 0;
 
   const totalUploadSize = useMemo(
     () => images.reduce((sum, file) => sum + file.size, 0) + (audio?.size ?? 0),
@@ -171,7 +171,7 @@ export function VideoBuilder() {
         ...current,
         status: "cancelling",
         stage: "Отмена",
-        message: "Backend останавливает FFmpeg и очищает временные файлы.",
+        message: "Останавливаем обработку и очищаем временные файлы.",
       } : current);
     } catch (cancelError) {
       setError(messageFromError(cancelError));
@@ -198,44 +198,89 @@ export function VideoBuilder() {
   return (
     <main>
       <header className="site-header">
-        <a href="#top" className="brand" aria-label="AutoFrames — на главную">
-          <span className="brand-mark" aria-hidden="true"><i /><i /><i /></span>
-          <span>AutoFrames</span>
-        </a>
-        <div className="header-status">
-          <span className="live-dot" />
-          FFmpeg backend
+        <div className="header-inner">
+          <a href="#top" className="brand" aria-label="AutoFrames — на главную">
+            <span className="brand-mark" aria-hidden="true"><i /><i /><i /></span>
+            <span>AutoFrames</span>
+          </a>
+          <div className="header-actions">
+            <a className="header-anchor" href="#workspace">Создать видео</a>
+            <a
+              className="creator-link"
+              href="https://nexeraasia.vercel.app"
+              target="_blank"
+              rel="noreferrer"
+              aria-label="Создано NEXERA — открыть сайт"
+            >
+              <span>By</span>
+              <strong>NEXERA</strong>
+              <svg aria-hidden="true" viewBox="0 0 16 16" fill="none">
+                <path d="M5 11 11 5M6.5 5H11v4.5" />
+              </svg>
+            </a>
+          </div>
         </div>
       </header>
 
       <div id="top" className="page-shell">
         <section className="hero">
           <div className="hero-copy">
-            <span className="hero-badge">Локальная логика · облачный интерфейс</span>
-            <h1>Автоматическая сборка <em>видео из кадров</em></h1>
+            <span className="hero-badge"><i aria-hidden="true" /> Монтаж без рутины</span>
+            <h1>Кадры становятся <em>готовым видео.</em></h1>
             <p>
-              Время окончания каждого кадра берётся из имени изображения. AutoFrames сортирует
-              сотни файлов, проверяет синхронизацию и собирает готовый MP4 через FFmpeg.
+              Добавьте изображения и озвучку — AutoFrames выстроит точный таймлайн,
+              синхронизирует каждый кадр и подготовит ролик к публикации.
             </p>
+            <div className="hero-benefits" aria-label="Преимущества">
+              <span><i aria-hidden="true">✓</i> Точная синхронизация</span>
+              <span><i aria-hidden="true">✓</i> До 500 кадров</span>
+              <span><i aria-hidden="true">✓</i> Любой формат</span>
+            </div>
+            <a className="primary-button hero-button" href="#workspace">
+              Начать сборку
+              <svg aria-hidden="true" viewBox="0 0 20 20" fill="none"><path d="m7 4 6 6-6 6" /></svg>
+            </a>
           </div>
           <div className="hero-visual" aria-hidden="true">
-            <div className="frame-stack frame-back" />
-            <div className="frame-stack frame-middle" />
-            <div className="frame-stack frame-front">
-              <span className="play-symbol">▶</span>
-              <div className="visual-timeline"><i /><i /><i /><i /></div>
+            <div className="studio-glow" />
+            <div className="studio-card">
+              <div className="studio-bar">
+                <span><i /><i /><i /></span>
+                <strong>Новый ролик</strong>
+                <b>•••</b>
+              </div>
+              <div className="studio-preview">
+                <div className="preview-shape preview-shape-one" />
+                <div className="preview-shape preview-shape-two" />
+                <span className="preview-play">
+                  <svg viewBox="0 0 24 24"><path d="m9 7 8 5-8 5V7Z" /></svg>
+                </span>
+              </div>
+              <div className="studio-timeline">
+                <div className="timeline-ruler"><i /><i /><i /><i /><i /></div>
+                <div className="timeline-clips"><i /><i /><i /><i /></div>
+                <span className="timeline-cursor" />
+              </div>
             </div>
+            <div className="floating-card sync-card"><span>✓</span><div><small>Синхронизация</small><strong>Кадры готовы</strong></div></div>
+            <div className="floating-card duration-card"><small>Длительность</small><strong>01:24</strong></div>
           </div>
         </section>
 
-        <nav className="stepper" aria-label="Этапы проекта">
-          {["Файлы", "Таймлайн", "Настройки", "Результат"].map((label, index) => (
-            <div className={`step ${index < currentStep ? "done" : ""} ${index === currentStep ? "active" : ""}`} key={label}>
-              <span>{index < currentStep ? "✓" : index + 1}</span>
-              <strong>{label}</strong>
-            </div>
-          ))}
-        </nav>
+        <section id="workspace" className="workspace-heading">
+          <div>
+            <span className="eyebrow">Рабочая область</span>
+            <h2>От файлов до готового ролика</h2>
+          </div>
+          <nav className="stepper" aria-label="Этапы проекта">
+            {["Файлы", "Таймлайн", "Настройки", "Результат"].map((label, index) => (
+              <div className={`step ${index < currentStep ? "done" : ""} ${index === currentStep ? "active" : ""}`} key={label}>
+                <span>{index < currentStep ? "✓" : index + 1}</span>
+                <strong>{label}</strong>
+              </div>
+            ))}
+          </nav>
+        </section>
 
         {error && (
           <div className="global-error" role="alert">
@@ -293,7 +338,7 @@ export function VideoBuilder() {
             <div className="result-icon" aria-hidden="true">✓</div>
             <span className="eyebrow">Готово</span>
             <h2 id="result-title">Видео успешно собрано</h2>
-            <p>Backend проверил контейнер, кодеки, разрешение, FPS и длительность результата.</p>
+            <p>Файл проверен и полностью готов к скачиванию и публикации.</p>
             <div className="result-specs">
               <span>{String(mediaInfo.width ?? settings.video.width)}×{String(mediaInfo.height ?? settings.video.height)}</span>
               <span>{String(mediaInfo.fps ?? settings.video.fps)} FPS</span>
@@ -315,9 +360,10 @@ export function VideoBuilder() {
         )}
       </div>
 
-      <footer>
-        <p>AutoFrames · точная синхронизация кадров с аудио</p>
-        <span>Next.js + FastAPI + FFmpeg</span>
+      <footer className="site-footer">
+        <a href="#top" className="footer-brand">AutoFrames</a>
+        <p>Собирайте истории, а не таймлайны.</p>
+        <a href="https://nexeraasia.vercel.app" target="_blank" rel="noreferrer">By NEXERA ↗</a>
       </footer>
     </main>
   );
