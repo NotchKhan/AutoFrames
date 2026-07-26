@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: autoframes-backend
+    runtime: docker
+    rootDir: backend
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+    envVars:
+      - key: FRONTEND_ORIGIN
+        sync: false
+      - key: MAX_FILE_SIZE_MB
+        value: "100"
+      - key: MAX_TOTAL_SIZE_MB
+        value: "2048"
+      - key: MAX_IMAGE_COUNT
+        value: "500"
+      - key: PROJECT_TTL_HOURS
+        value: "24"

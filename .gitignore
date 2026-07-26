@@ -4,22 +4,41 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
-
-# Виртуальные окружения и IDE
+.coverage
+htmlcov/
 .venv/
 venv/
+
+# Next.js / Node.js
+node_modules/
+.next/
+out/
+coverage/
+*.tsbuildinfo
+.eslintcache
+.vercel/
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# Локальные настройки и секреты
+.env
+.env.*
+!.env.example
+
+# Данные проектов, загрузки, промежуточные файлы и результаты
+data/
+temp/
+output/
+uploads/
+logs/
+*.mp4
+*.partial
+*.log
+
+# IDE и ОС
 .idea/
 .vscode/
-
-# Данные проектов и результаты
-temp/*
-output/*
-logs/*
-!temp/.gitkeep
-!output/.gitkeep
-!logs/.gitkeep
-
-# ОС
 Thumbs.db
 .DS_Store
-
+desktop.ini
