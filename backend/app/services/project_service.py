@@ -25,6 +25,7 @@ from config import (
     IMAGE_EXTENSIONS,
     IMAGE_MIME_TYPES,
     MAX_AUDIO_FILE_BYTES,
+    MAX_AUDIO_TRACKS,
     MAX_IMAGE_FILES,
     MAX_IMAGE_FILE_BYTES,
     MAX_TOTAL_FILE_BYTES,
@@ -51,7 +52,9 @@ from models.render import AudioSettings, RenderResult, RenderSettings, VideoSett
 from models.timeline import SourceImage, TimelineItem, ValidationIssue
 from services.audio_analyzer import (
     AudioAnalysisError,
+    AudioConcatError,
     AudioPause,
+    concatenate_audio_tracks,
     detect_audio_pauses,
     prepare_transcription_audio,
 )
@@ -94,7 +97,7 @@ class ProjectRecord:
     status: str = "draft"
     images: list[SourceImage] = field(default_factory=list)
     audio_path: Path | None = None
-    audio_original_filename: str | None = None
+    audio_original_filenames: list[str] = field(default_factory=list)
     audio_duration_ms: int | None = None
     audio_pauses: list[AudioPause] | None = None
     speech_transcript: SpeechTranscript | None = None
@@ -542,41 +545,119 @@ class ProjectService:
             with record.lock:
                 record.mutation_in_progress = False
 
-    async def upload_audio(self, project_id: str, upload: UploadFile) -> UploadResponse:
+    async def upload_audio(
+        self,
+        project_id: str,
+        uploads: list[UploadFile],
+    ) -> UploadResponse:
         record = self._get(project_id)
+        if not uploads:
+            raise ApiError(422, "audio_missing", "Не выбрано ни одной аудиодорожки.")
+        if len(uploads) > MAX_AUDIO_TRACKS:
+            raise ApiError(
+                413,
+                "too_many_audio_tracks",
+                f"За один раз можно добавить не более {MAX_AUDIO_TRACKS} аудиодорожек.",
+            )
         if self.ffprobe_path is None:
             raise ApiError(503, "ffprobe_unavailable", "ffprobe не найден на сервере. Загрузка аудио не может быть проверена.")
-        original_name = self._external_filename(upload)
-        extension = Path(original_name).suffix.lower()
-        if extension not in AUDIO_EXTENSIONS:
-            raise ApiError(415, "unsupported_audio_type", f"Файл «{original_name}» имеет неподдерживаемое расширение.")
-        if self._mime(upload) not in AUDIO_MIME_TYPES:
-            raise ApiError(415, "invalid_audio_mime", f"Файл «{original_name}» имеет недопустимый MIME-тип.")
+        if len(uploads) > 1 and self.ffmpeg_path is None:
+            raise ApiError(
+                503,
+                "ffmpeg_unavailable",
+                "FFmpeg не найден на сервере. Несколько аудиодорожек нельзя объединить.",
+            )
+        validated: list[tuple[UploadFile, str, str]] = []
+        for upload in uploads:
+            original_name = self._external_filename(upload)
+            extension = Path(original_name).suffix.lower()
+            if extension not in AUDIO_EXTENSIONS:
+                raise ApiError(415, "unsupported_audio_type", f"Файл «{original_name}» имеет неподдерживаемое расширение.")
+            if self._mime(upload) not in AUDIO_MIME_TYPES:
+                raise ApiError(415, "invalid_audio_mime", f"Файл «{original_name}» имеет недопустимый MIME-тип.")
+            validated.append((upload, original_name, extension))
         with record.lock:
             self._ensure_editable(record)
             total_size = self._project_size(record)
             old_size = record.audio_path.stat().st_size if record.audio_path and record.audio_path.is_file() else 0
             record.mutation_in_progress = True
-        stored = record.workspace.uploads_dir / f"audio_{uuid.uuid4().hex}{extension}"
+        staged_paths: list[Path] = []
+        combined_path: Path | None = None
         committed = False
         try:
-            await self._stream_upload(
-                upload,
-                stored,
-                file_limit=MAX_AUDIO_FILE_BYTES,
-                total_before=total_size - old_size,
-            )
-            try:
-                duration_ms = probe_audio_duration_ms(stored, self.ffprobe_path)
-            except MediaProbeError as exc:
-                stored.unlink(missing_ok=True)
-                raise ApiError(422, "corrupted_audio", str(exc)) from exc
+            track_durations_ms: list[int] = []
+            bytes_before = total_size - old_size
+            for upload, original_name, extension in validated:
+                stored = record.workspace.uploads_dir / f"audio_{uuid.uuid4().hex}{extension}"
+                await self._stream_upload(
+                    upload,
+                    stored,
+                    file_limit=MAX_AUDIO_FILE_BYTES,
+                    total_before=bytes_before,
+                )
+                staged_paths.append(stored)
+                bytes_before += stored.stat().st_size
+                try:
+                    track_durations_ms.append(
+                        probe_audio_duration_ms(stored, self.ffprobe_path)
+                    )
+                except MediaProbeError as exc:
+                    raise ApiError(
+                        422,
+                        "corrupted_audio",
+                        f"Дорожка «{original_name}» повреждена или не содержит аудиопоток: {exc}",
+                    ) from exc
+
+            expected_duration_ms = sum(track_durations_ms)
+            if len(staged_paths) == 1:
+                effective_audio_path = staged_paths[0]
+                duration_ms = track_durations_ms[0]
+            else:
+                combined_path = (
+                    record.workspace.uploads_dir
+                    / f"audio_combined_{uuid.uuid4().hex}.m4a"
+                )
+                try:
+                    async with self._analysis_ffmpeg_slots:
+                        await asyncio.to_thread(
+                            concatenate_audio_tracks,
+                            staged_paths,
+                            self.ffmpeg_path,
+                            combined_path,
+                            expected_duration_ms,
+                        )
+                    duration_ms = probe_audio_duration_ms(
+                        combined_path,
+                        self.ffprobe_path,
+                    )
+                except (AudioConcatError, MediaProbeError) as exc:
+                    raise ApiError(
+                        422,
+                        "audio_concat_failed",
+                        "Не удалось последовательно объединить аудиодорожки. "
+                        "Проверьте файлы и попробуйте снова.",
+                    ) from exc
+                allowed_difference_ms = max(250, len(staged_paths) * 60)
+                if abs(duration_ms - expected_duration_ms) > allowed_difference_ms:
+                    raise ApiError(
+                        422,
+                        "audio_concat_duration_mismatch",
+                        "После склейки изменилась общая длительность аудио. "
+                        "Операция отменена для сохранения синхронизации.",
+                    )
+                if total_size - old_size + combined_path.stat().st_size > MAX_TOTAL_FILE_BYTES:
+                    raise ApiError(
+                        413,
+                        "project_too_large",
+                        "Объединённая аудиодорожка превышает общий лимит проекта.",
+                    )
+                effective_audio_path = combined_path
 
             timeline_mode = timeline_mode_for_filenames(record.images)
             if record.images and timeline_mode == "audio_pauses":
                 pauses, transcript, analysis_warning = await self._analyze_audio_for(
                     record,
-                    stored,
+                    effective_audio_path,
                     duration_ms,
                 )
                 analysis_complete = True
@@ -586,8 +667,8 @@ class ProjectService:
 
             with record.lock:
                 old_path = record.audio_path
-                record.audio_path = stored
-                record.audio_original_filename = original_name
+                record.audio_path = effective_audio_path
+                record.audio_original_filenames = [name for _upload, name, _extension in validated]
                 record.audio_duration_ms = duration_ms
                 record.audio_pauses = pauses
                 record.speech_transcript = transcript
@@ -597,24 +678,38 @@ class ProjectService:
                 self._rebuild_timeline(record)
                 response = UploadResponse(
                     project_id=project_id,
-                    uploaded_count=1,
+                    uploaded_count=len(validated),
                     total_images=len(record.images),
                     audio_uploaded=True,
                     status=record.status,
                 )
                 committed = True
-            if old_path is not None and old_path != stored:
+            obsolete_paths = [
+                path
+                for path in [old_path, *staged_paths]
+                if path is not None and path != effective_audio_path
+            ]
+            for obsolete_path in obsolete_paths:
                 try:
-                    old_path.unlink(missing_ok=True)
+                    obsolete_path.unlink(missing_ok=True)
                 except OSError:
-                    LOGGER.warning("Не удалось удалить прежнюю аудиодорожку проекта %s", project_id)
+                    LOGGER.warning(
+                        "Не удалось удалить служебную аудиодорожку проекта %s",
+                        project_id,
+                    )
             return response
         except BaseException:
             if not committed:
-                try:
-                    stored.unlink(missing_ok=True)
-                except OSError:
-                    LOGGER.warning("Не удалось очистить незавершённую загрузку %s", stored.name)
+                for staged_path in [*staged_paths, combined_path]:
+                    if staged_path is None:
+                        continue
+                    try:
+                        staged_path.unlink(missing_ok=True)
+                    except OSError:
+                        LOGGER.warning(
+                            "Не удалось очистить незавершённую загрузку %s",
+                            staged_path.name,
+                        )
             raise
         finally:
             with record.lock:
@@ -741,6 +836,7 @@ class ProjectService:
                 items=items,
                 issues=[ValidationIssueResponse(message=issue.message, filename=issue.filename, critical=issue.critical) for issue in issues],
                 audio_uploaded=record.audio_path is not None,
+                audio_track_count=len(record.audio_original_filenames),
                 audio_duration_ms=audio_duration,
                 audio_duration_formatted=format_ms(audio_duration) if audio_duration is not None else None,
                 timeline_end_ms=timeline_end,

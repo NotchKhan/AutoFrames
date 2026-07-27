@@ -14,6 +14,20 @@ interface TimelineTableProps {
 }
 
 
+function audioTrackLabel(count: number): string {
+  const remainder100 = count % 100;
+  const remainder10 = count % 10;
+  const noun = remainder100 >= 11 && remainder100 <= 14
+    ? "дорожек"
+    : remainder10 === 1
+      ? "дорожка"
+      : remainder10 >= 2 && remainder10 <= 4
+        ? "дорожки"
+        : "дорожек";
+  return `${count} ${noun}`;
+}
+
+
 export function TimelineTable({ projectId, timeline, disabled, onDelete }: TimelineTableProps) {
   const automatic = timeline.timeline_mode === "audio_pauses";
   const methodLabel = {
@@ -65,7 +79,9 @@ export function TimelineTable({ projectId, timeline, disabled, onDelete }: Timel
             : (timeline.audio_duration_formatted ?? "—")}</strong>
         </div>
         <div className="metric-card">
-          <span>{automatic ? "Длительность аудио" : "Разница"}</span>
+          <span>{automatic
+            ? `Аудио · ${audioTrackLabel(timeline.audio_track_count)}`
+            : "Разница"}</span>
           <strong className={!automatic && Math.abs(timeline.difference_ms ?? 0) > 50 ? "attention" : "positive"}>
             {automatic
               ? (timeline.audio_duration_formatted ?? "—")

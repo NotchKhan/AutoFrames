@@ -55,7 +55,7 @@ function messageFromError(error: unknown): string {
 
 export function VideoBuilder() {
   const [images, setImages] = useState<File[]>([]);
-  const [audio, setAudio] = useState<File | null>(null);
+  const [audio, setAudio] = useState<File[]>([]);
   const [projectId, setProjectId] = useState<string | null>(null);
   const [timeline, setTimeline] = useState<TimelineResponse | null>(null);
   const [settings, setSettings] = useState<RenderPayload>(DEFAULT_RENDER_SETTINGS);
@@ -70,7 +70,8 @@ export function VideoBuilder() {
   const currentStep = phase === "result" || renderActive ? 3 : timeline ? 2 : 0;
 
   const totalUploadSize = useMemo(
-    () => images.reduce((sum, file) => sum + file.size, 0) + (audio?.size ?? 0),
+    () => images.reduce((sum, file) => sum + file.size, 0)
+      + audio.reduce((sum, file) => sum + file.size, 0),
     [images, audio],
   );
 
@@ -107,7 +108,7 @@ export function VideoBuilder() {
   }, [projectId, renderActive]);
 
   async function uploadProject() {
-    if (!images.length || !audio) return;
+    if (!images.length || !audio.length) return;
     setPhase("uploading");
     setError(null);
     setTimeline(null);
@@ -121,7 +122,11 @@ export function VideoBuilder() {
       setProjectId(project.project_id);
       setBusyMessage(`Загружаем ${images.length} изображений…`);
       await uploadImages(project.project_id, images);
-      setBusyMessage("Загружаем аудио, распознаём фразы и естественные паузы…");
+      setBusyMessage(
+        audio.length > 1
+          ? `Склеиваем ${audio.length} аудиодорожки по очереди и анализируем речь…`
+          : "Загружаем аудио, распознаём фразы и естественные паузы…",
+      );
       await uploadAudio(project.project_id, audio);
       setBusyMessage("Собираем точный план смены сцен…");
       const checked = await getTimeline(project.project_id);
@@ -199,7 +204,7 @@ export function VideoBuilder() {
   async function newProject() {
     const previousId = projectId;
     setImages([]);
-    setAudio(null);
+    setAudio([]);
     setProjectId(null);
     setTimeline(null);
     setSettings(DEFAULT_RENDER_SETTINGS);

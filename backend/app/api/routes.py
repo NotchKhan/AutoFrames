@@ -59,10 +59,15 @@ def get_image(project_id: str, image_id: str, request: Request) -> FileResponse:
 async def upload_audio(
     project_id: str,
     request: Request,
-    file: UploadFile = File(..., description="Один аудиофайл с полной озвучкой"),
+    file: UploadFile | None = File(None, description="Одна дорожка (старый совместимый формат)"),
+    files: list[UploadFile] | None = File(
+        None,
+        description="Несколько дорожек в порядке последовательного воспроизведения",
+    ),
 ) -> UploadResponse:
-    """Загрузить аудио и определить длительность через ffprobe."""
-    return await _projects(request).upload_audio(project_id, file)
+    """Загрузить одну или несколько последовательных дорожек и проверить итоговое аудио."""
+    ordered = ([file] if file is not None else []) + (files or [])
+    return await _projects(request).upload_audio(project_id, ordered)
 
 
 @router.get("/projects/{project_id}/timeline", response_model=TimelineResponse)

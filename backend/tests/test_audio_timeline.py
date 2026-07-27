@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
+import pytest
+
 from models.timeline import SourceImage
-from services.audio_analyzer import AudioPause, parse_silencedetect_output
+from services.audio_analyzer import (
+    AudioPause,
+    concatenate_audio_tracks,
+    parse_silencedetect_output,
+)
 from services.speech_recognizer import SpeechTranscript, SpeechWord
 from services.timeline_builder import build_audio_timeline
 
@@ -32,6 +39,40 @@ def test_overlapping_silence_events_are_merged() -> None:
 [silencedetect @ 2] silence_end: 2.0 | silence_duration: 0.51
 """
     assert parse_silencedetect_output(output, 3_000) == [AudioPause(1_000, 2_000)]
+
+
+def test_audio_concat_preserves_input_order_and_normalizes_tracks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = tmp_path / "01-first.wav"
+    second = tmp_path / "02-second.mp3"
+    destination = tmp_path / "combined.m4a"
+    first.write_bytes(b"first")
+    second.write_bytes(b"second")
+    captured: list[str] = []
+
+    def run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured.extend(command)
+        destination.write_bytes(b"combined")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr("services.audio_analyzer.subprocess.run", run)
+
+    result = concatenate_audio_tracks(
+        [first, second],
+        Path("ffmpeg"),
+        destination,
+        8_000,
+    )
+
+    assert result == destination
+    assert captured.index(str(first)) < captured.index(str(second))
+    filter_graph = captured[captured.index("-filter_complex") + 1]
+    assert "[0:a:0]aresample=48000" in filter_graph
+    assert "[1:a:0]aresample=48000" in filter_graph
+    assert "[a0][a1]concat=n=2:v=0:a=1[outa]" in filter_graph
+    assert captured[captured.index("-c:a") + 1] == "aac"
 
 
 def test_audio_timeline_uses_natural_order_and_nearby_pauses() -> None:

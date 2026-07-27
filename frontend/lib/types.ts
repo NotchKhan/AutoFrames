@@ -49,6 +49,7 @@ export interface TimelineResponse {
   items: TimelineRow[];
   issues: ValidationIssue[];
   audio_uploaded: boolean;
+  audio_track_count: number;
   audio_duration_ms: number | null;
   audio_duration_formatted: string | null;
   timeline_end_ms: number | null;

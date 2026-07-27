@@ -15,7 +15,7 @@ import services.video_renderer as renderer_module
 import services.workspace_manager as workspace_module
 from main import create_app
 from models.render import RenderResult
-from services.audio_analyzer import AudioAnalysisError, AudioPause
+from services.audio_analyzer import AudioAnalysisError, AudioConcatError, AudioPause
 from services.project_service import ProjectService
 from services.speech_recognizer import (
     SpeechRecognitionError,
@@ -112,6 +112,85 @@ def test_upload_and_sorted_timeline(client: TestClient) -> None:
         (5_000, 14_000, 9_000),
     ]
     assert payload["difference_ms"] == 0
+    assert payload["audio_track_count"] == 1
+
+
+def test_multiple_audio_tracks_are_concatenated_in_uploaded_order(
+    client: TestClient,
+    service: ProjectService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_id = create_project(client)
+    concat_calls: list[tuple[list[bytes], int]] = []
+
+    def probe(path: Path, _ffprobe: Path) -> int:
+        if path.name.startswith("audio_combined_"):
+            return 7_000
+        return {b"first-track": 3_000, b"second-track": 4_000}[path.read_bytes()]
+
+    def concat(
+        paths: list[Path],
+        _ffmpeg: Path,
+        destination: Path,
+        total_duration_ms: int,
+    ) -> Path:
+        concat_calls.append(([path.read_bytes() for path in paths], total_duration_ms))
+        destination.write_bytes(b"combined-audio")
+        return destination
+
+    monkeypatch.setattr(project_service_module, "probe_audio_duration_ms", probe)
+    monkeypatch.setattr(project_service_module, "concatenate_audio_tracks", concat)
+    tracks = [
+        ("files", ("01_intro.wav", b"first-track", "audio/wav")),
+        ("files", ("02_finish.mp3", b"second-track", "audio/mpeg")),
+    ]
+
+    response = client.post(f"/api/projects/{project_id}/audio", files=tracks)
+
+    assert response.status_code == 200
+    assert response.json()["uploaded_count"] == 2
+    assert concat_calls == [([b"first-track", b"second-track"], 7_000)]
+    record = service._records[project_id]
+    assert record.audio_original_filenames == ["01_intro.wav", "02_finish.mp3"]
+    assert record.audio_duration_ms == 7_000
+    assert record.audio_path is not None
+    assert record.audio_path.name.startswith("audio_combined_")
+    assert record.audio_path.read_bytes() == b"combined-audio"
+    assert list(record.workspace.uploads_dir.glob("audio_*")) == [record.audio_path]
+    timeline = client.get(f"/api/projects/{project_id}/timeline").json()
+    assert timeline["audio_track_count"] == 2
+    assert timeline["audio_duration_ms"] == 7_000
+
+
+def test_failed_multi_track_concat_preserves_previous_audio(
+    client: TestClient,
+    service: ProjectService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_id = create_project(client)
+    original = {"file": ("original.wav", b"original-track", "audio/wav")}
+    assert client.post(f"/api/projects/{project_id}/audio", files=original).status_code == 200
+    record = service._records[project_id]
+    old_path = record.audio_path
+    old_duration = record.audio_duration_ms
+
+    def fail_concat(*_args: object, **_kwargs: object) -> Path:
+        raise AudioConcatError("expected test failure")
+
+    monkeypatch.setattr(project_service_module, "concatenate_audio_tracks", fail_concat)
+    replacement = [
+        ("files", ("part-1.wav", b"replacement-one", "audio/wav")),
+        ("files", ("part-2.wav", b"replacement-two", "audio/wav")),
+    ]
+    response = client.post(f"/api/projects/{project_id}/audio", files=replacement)
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "audio_concat_failed"
+    assert record.audio_path == old_path
+    assert record.audio_original_filenames == ["original.wav"]
+    assert record.audio_duration_ms == old_duration
+    assert old_path is not None and old_path.is_file()
+    assert list(record.workspace.uploads_dir.glob("audio_*")) == [old_path]
 
 
 def test_duplicate_timestamps_are_reported(client: TestClient) -> None:

@@ -7,10 +7,10 @@ import { humanFileSize } from "@/lib/time";
 
 interface FileUploadProps {
   images: File[];
-  audio: File | null;
+  audio: File[];
   disabled: boolean;
   onImagesChange: (files: File[]) => void;
-  onAudioChange: (file: File | null) => void;
+  onAudioChange: (files: File[]) => void;
   onSubmit: () => void;
 }
 
@@ -30,6 +30,7 @@ export function FileUpload({
   const audioInput = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
   const totalImageSize = images.reduce((sum, file) => sum + file.size, 0);
+  const totalAudioSize = audio.reduce((sum, file) => sum + file.size, 0);
 
   function acceptDropped(files: FileList) {
     const selected = Array.from(files).filter((file) =>
@@ -40,6 +41,14 @@ export function FileUpload({
     }
   }
 
+  function moveAudio(index: number, offset: -1 | 1) {
+    const target = index + offset;
+    if (target < 0 || target >= audio.length) return;
+    const reordered = [...audio];
+    [reordered[index], reordered[target]] = [reordered[target], reordered[index]];
+    onAudioChange(reordered);
+  }
+
   return (
     <section className="panel upload-panel" aria-labelledby="upload-title">
       <div className="section-heading">
@@ -48,7 +57,7 @@ export function FileUpload({
           <div>
             <span className="eyebrow">Новый проект</span>
             <h2 id="upload-title">Добавьте материалы</h2>
-            <p className="section-description">Выберите изображения по порядку сцен и одну дорожку озвучки.</p>
+            <p className="section-description">Выберите изображения и одну или несколько частей озвучки.</p>
           </div>
         </div>
         <span className="format-hint">До 500 кадров</span>
@@ -96,7 +105,7 @@ export function FileUpload({
 
         <button
           type="button"
-          className={`drop-zone audio-drop-zone ${audio ? "has-files" : ""}`}
+          className={`drop-zone audio-drop-zone ${audio.length ? "has-files" : ""}`}
           disabled={disabled}
           onClick={() => audioInput.current?.click()}
         >
@@ -104,13 +113,15 @@ export function FileUpload({
             <svg viewBox="0 0 24 24" fill="none"><path d="M6 18V8.5m0 0 12-3V15M6 8.5l12-3" /><circle cx="4" cy="18" r="2" /><circle cx="16" cy="15" r="2" /></svg>
           </span>
           <div className="drop-copy">
-            <strong>{audio ? "Озвучка добавлена" : "Озвучка"}</strong>
-            <span>{audio ? "Нажмите, чтобы выбрать другой файл" : "Добавьте полную аудиодорожку"}</span>
+            <strong>{audio.length ? "Озвучка добавлена" : "Озвучка"}</strong>
+            <span>{audio.length
+              ? "Нажмите, чтобы заменить выбранные дорожки"
+              : "Можно выбрать несколько последовательных частей"}</span>
           </div>
           <small>MP3 · WAV · M4A · AAC · OGG · FLAC</small>
-          {audio && (
+          {audio.length > 0 && (
             <span className="selection-summary">
-              <i aria-hidden="true">✓</i> {audio.name} · {humanFileSize(audio.size)}
+              <i aria-hidden="true">✓</i> {audio.length} дорожек · {humanFileSize(totalAudioSize)}
             </span>
           )}
         </button>
@@ -119,9 +130,57 @@ export function FileUpload({
           className="visually-hidden"
           type="file"
           accept={AUDIO_EXTENSIONS}
-          onChange={(event) => onAudioChange(event.target.files?.[0] ?? null)}
+          multiple
+          onClick={(event) => { event.currentTarget.value = ""; }}
+          onChange={(event) => onAudioChange(Array.from(event.target.files ?? []))}
         />
       </div>
+
+      {audio.length > 0 && (
+        <section className="audio-queue" aria-labelledby="audio-queue-title">
+          <div className="audio-queue-heading">
+            <div>
+              <strong id="audio-queue-title">Порядок озвучки</strong>
+              <span>Дорожки прозвучат последовательно сверху вниз, без наложения.</span>
+            </div>
+            <span>{audio.length} шт.</span>
+          </div>
+          <ol>
+            {audio.map((file, index) => (
+              <li key={`${file.name}-${file.size}-${file.lastModified}-${index}`}>
+                <span className="audio-order">{index + 1}</span>
+                <div>
+                  <strong title={file.name}>{file.name}</strong>
+                  <span>{humanFileSize(file.size)}</span>
+                </div>
+                <div className="audio-order-actions">
+                  <button
+                    type="button"
+                    disabled={disabled || index === 0}
+                    onClick={() => moveAudio(index, -1)}
+                    aria-label={`Поднять ${file.name} выше`}
+                    title="Поднять выше"
+                  >↑</button>
+                  <button
+                    type="button"
+                    disabled={disabled || index === audio.length - 1}
+                    onClick={() => moveAudio(index, 1)}
+                    aria-label={`Опустить ${file.name} ниже`}
+                    title="Опустить ниже"
+                  >↓</button>
+                  <button
+                    type="button"
+                    disabled={disabled}
+                    onClick={() => onAudioChange(audio.filter((_item, itemIndex) => itemIndex !== index))}
+                    aria-label={`Удалить ${file.name}`}
+                    title="Удалить дорожку"
+                  >×</button>
+                </div>
+              </li>
+            ))}
+          </ol>
+        </section>
+      )}
 
       <div className="tip-row">
         <span className="tip-example" aria-hidden="true">01 → 02</span>
@@ -136,7 +195,7 @@ export function FileUpload({
         <button
           type="button"
           className="primary-button"
-          disabled={disabled || images.length === 0 || audio === null}
+          disabled={disabled || images.length === 0 || audio.length === 0}
           onClick={onSubmit}
         >
           {disabled ? <span className="spinner" aria-hidden="true" /> : null}

@@ -9,7 +9,11 @@ from PIL import Image
 
 from models.render import AudioSettings, RenderSettings, VideoSettings
 from models.timeline import SourceImage
-from services.audio_analyzer import detect_audio_pauses, prepare_transcription_audio
+from services.audio_analyzer import (
+    concatenate_audio_tracks,
+    detect_audio_pauses,
+    prepare_transcription_audio,
+)
 from services.media_probe import (
     check_media_tools,
     probe_audio_duration_ms,
@@ -55,6 +59,33 @@ def test_supported_audio_formats_with_real_ffprobe(
     ], tmp_path / "audio-formats.log")
     duration = probe_audio_duration_ms(audio, ffprobe)
     assert 200 <= duration <= 400
+
+
+@pytest.mark.integration
+def test_sequential_audio_concat_with_real_ffmpeg(tmp_path: Path) -> None:
+    ffmpeg, ffprobe = media_binaries()
+    first = tmp_path / "01-first.wav"
+    second = tmp_path / "02-second.wav"
+    destination = tmp_path / "combined.m4a"
+    for output, frequency, duration in (
+        (first, 440, 0.35),
+        (second, 880, 0.55),
+    ):
+        run_process([
+            ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
+            "-f", "lavfi", "-i", f"sine=frequency={frequency}:duration={duration}",
+            "-c:a", "pcm_s16le", output,
+        ], tmp_path / "generate-concat-inputs.log")
+
+    concatenate_audio_tracks(
+        [first, second],
+        ffmpeg,
+        destination,
+        900,
+    )
+
+    assert destination.stat().st_size > 0
+    assert 850 <= probe_audio_duration_ms(destination, ffprobe) <= 1_000
 
 
 @pytest.mark.integration

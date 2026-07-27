@@ -507,6 +507,96 @@ summary:focus-visible {
 }
 .selection-summary i { font-style: normal; }
 
+.audio-queue {
+  margin-top: 16px;
+  padding: 16px;
+  border: 1px solid #e6e9f0;
+  border-radius: 16px;
+  background: #fbfcff;
+}
+
+.audio-queue-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.audio-queue-heading > div { display: grid; gap: 4px; }
+.audio-queue-heading strong { color: var(--ink); font-size: 0.84rem; }
+.audio-queue-heading span { color: var(--muted); font-size: 0.75rem; line-height: 1.5; }
+.audio-queue-heading > span { flex: 0 0 auto; font-weight: 750; }
+
+.audio-queue ol {
+  margin: 12px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+  list-style: none;
+}
+
+.audio-queue li {
+  min-width: 0;
+  padding: 9px 10px;
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid #eceef4;
+  border-radius: 11px;
+  background: white;
+}
+
+.audio-order {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  color: var(--violet-dark);
+  border-radius: 9px;
+  background: var(--violet-soft);
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.audio-queue li > div:not(.audio-order-actions) {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.audio-queue li strong {
+  overflow: hidden;
+  color: #344054;
+  font-size: 0.78rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.audio-queue li > div > span { color: var(--muted); font-size: 0.68rem; }
+.audio-order-actions { display: flex; gap: 5px; }
+
+.audio-order-actions button {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  color: #596579;
+  border: 1px solid #e2e6ee;
+  border-radius: 8px;
+  background: #f8f9fb;
+  cursor: pointer;
+  transition: 150ms ease;
+}
+
+.audio-order-actions button:hover:not(:disabled) {
+  color: var(--violet-dark);
+  border-color: rgba(98, 87, 232, 0.3);
+  background: var(--violet-soft);
+}
+
+.audio-order-actions button:disabled { cursor: not-allowed; opacity: 0.38; }
+
 .tip-row {
   display: flex;
   align-items: flex-start;

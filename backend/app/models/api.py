@@ -73,6 +73,7 @@ class TimelineResponse(BaseModel):
     items: list[TimelineRowResponse]
     issues: list[ValidationIssueResponse]
     audio_uploaded: bool
+    audio_track_count: int = 0
     audio_duration_ms: int | None
     audio_duration_formatted: str | None
     timeline_end_ms: int | None

@@ -52,9 +52,9 @@ export function uploadImages(projectId: string, files: File[]): Promise<unknown>
   return request(`/api/projects/${projectId}/images`, { method: "POST", body: form });
 }
 
-export function uploadAudio(projectId: string, file: File): Promise<unknown> {
+export function uploadAudio(projectId: string, files: File[]): Promise<unknown> {
   const form = new FormData();
-  form.append("file", file, file.name);
+  files.forEach((file) => form.append("files", file, file.name));
   return request(`/api/projects/${projectId}/audio`, { method: "POST", body: form });
 }
 

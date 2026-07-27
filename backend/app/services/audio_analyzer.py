@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -13,6 +14,10 @@ _SILENCE_END_RE = re.compile(r"silence_end:\s*(-?\d+(?:\.\d+)?)")
 
 class AudioAnalysisError(RuntimeError):
     """Аудиодорожку не удалось проанализировать на естественные паузы."""
+
+
+class AudioConcatError(RuntimeError):
+    """Несколько аудиодорожек не удалось последовательно объединить."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,6 +32,78 @@ class AudioPause:
     @property
     def duration_ms(self) -> int:
         return self.end_ms - self.start_ms
+
+
+def concatenate_audio_tracks(
+    audio_paths: Sequence[Path],
+    ffmpeg_path: Path,
+    destination: Path,
+    total_duration_ms: int,
+) -> Path:
+    """Склеивает дорожки строго по порядку без наложения и нормализует формат."""
+    if len(audio_paths) < 2:
+        raise ValueError("Для склейки нужны как минимум две аудиодорожки.")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.unlink(missing_ok=True)
+
+    command = [str(ffmpeg_path), "-hide_banner", "-nostdin", "-v", "error"]
+    for audio_path in audio_paths:
+        command.extend(["-i", str(audio_path)])
+
+    prepared_labels: list[str] = []
+    filter_parts: list[str] = []
+    for index in range(len(audio_paths)):
+        label = f"a{index}"
+        prepared_labels.append(f"[{label}]")
+        filter_parts.append(
+            f"[{index}:a:0]aresample=48000,"
+            "aformat=sample_fmts=fltp:channel_layouts=stereo,"
+            f"asetpts=PTS-STARTPTS[{label}]"
+        )
+    filter_parts.append(
+        "".join(prepared_labels)
+        + f"concat=n={len(audio_paths)}:v=0:a=1[outa]"
+    )
+    command.extend([
+        "-filter_complex",
+        ";".join(filter_parts),
+        "-map",
+        "[outa]",
+        "-vn",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "192k",
+        "-ar",
+        "48000",
+        "-ac",
+        "2",
+        "-movflags",
+        "+faststart",
+        "-n",
+        str(destination),
+    ])
+    creation_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    timeout_seconds = max(90, min(1800, round(total_duration_ms / 1000 * 2 + 60)))
+    try:
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            shell=False,
+            creationflags=creation_flags,
+            timeout=timeout_seconds,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        destination.unlink(missing_ok=True)
+        raise AudioConcatError("Не удалось запустить последовательную склейку аудио.") from exc
+    if completed.returncode != 0 or not destination.is_file() or destination.stat().st_size <= 0:
+        destination.unlink(missing_ok=True)
+        raise AudioConcatError("FFmpeg не смог последовательно объединить аудиодорожки.")
+    return destination
 
 
 def parse_silencedetect_output(output: str, audio_duration_ms: int) -> list[AudioPause]:
