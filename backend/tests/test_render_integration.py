@@ -9,6 +9,7 @@ from PIL import Image
 
 from models.render import AudioSettings, RenderSettings, VideoSettings
 from models.timeline import SourceImage
+from services.audio_analyzer import detect_audio_pauses, prepare_transcription_audio
 from services.media_probe import (
     check_media_tools,
     probe_audio_duration_ms,
@@ -54,6 +55,32 @@ def test_supported_audio_formats_with_real_ffprobe(
     ], tmp_path / "audio-formats.log")
     duration = probe_audio_duration_ms(audio, ffprobe)
     assert 200 <= duration <= 400
+
+
+@pytest.mark.integration
+def test_pause_detection_and_transcription_preparation_with_real_ffmpeg(tmp_path: Path) -> None:
+    ffmpeg, ffprobe = media_binaries()
+    audio = tmp_path / "voice-with-pause.wav"
+    run_process([
+        ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
+        "-f", "lavfi", "-i", "sine=frequency=440:duration=0.8",
+        "-f", "lavfi", "-i", "anullsrc=r=16000:cl=mono:d=0.6",
+        "-f", "lavfi", "-i", "sine=frequency=660:duration=0.8",
+        "-filter_complex", "[0:a][1:a][2:a]concat=n=3:v=0:a=1[out]",
+        "-map", "[out]", audio,
+    ], tmp_path / "generate-pause.log")
+
+    pauses = detect_audio_pauses(audio, ffmpeg, 2_200)
+    assert any(pause.start_ms < 1_000 < pause.end_ms for pause in pauses)
+
+    prepared = prepare_transcription_audio(
+        audio,
+        ffmpeg,
+        tmp_path / "transcription.mp3",
+        2_200,
+    )
+    assert prepared.suffix == ".mp3"
+    assert 2_000 <= probe_audio_duration_ms(prepared, ffprobe) <= 2_400
 
 
 @pytest.mark.integration

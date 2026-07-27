@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import threading
@@ -15,6 +16,10 @@ from fastapi import UploadFile
 
 from api.errors import ApiError, filesystem_error
 from config import (
+    AUDIO_ANALYSIS_CONCURRENCY,
+    AUDIO_MINIMUM_SCENE_MS,
+    AUDIO_MINIMUM_SILENCE_MS,
+    AUDIO_SILENCE_NOISE_DB,
     AUDIO_EXTENSIONS,
     AUDIO_MIME_TYPES,
     IMAGE_EXTENSIONS,
@@ -23,7 +28,14 @@ from config import (
     MAX_IMAGE_FILES,
     MAX_IMAGE_FILE_BYTES,
     MAX_TOTAL_FILE_BYTES,
+    OPENAI_API_BASE_URL,
+    OPENAI_API_KEY,
+    OPENAI_TRANSCRIPTION_ENABLED,
+    OPENAI_TRANSCRIPTION_LANGUAGE,
+    OPENAI_TRANSCRIPTION_MAX_MINUTES_PER_HOUR,
+    OPENAI_TRANSCRIPTION_TIMEOUT_SECONDS,
     PROJECT_TTL_HOURS,
+    RENDER_CONCURRENCY,
 )
 from models.api import (
     ProgressResponse,
@@ -37,6 +49,12 @@ from models.api import (
 )
 from models.render import AudioSettings, RenderResult, RenderSettings, VideoSettings
 from models.timeline import SourceImage, TimelineItem, ValidationIssue
+from services.audio_analyzer import (
+    AudioAnalysisError,
+    AudioPause,
+    detect_audio_pauses,
+    prepare_transcription_audio,
+)
 from services.filename_parser import TimestampParseError, parse_timestamp
 from services.image_processor import ImageValidationError, validate_image
 from services.media_probe import (
@@ -45,8 +63,18 @@ from services.media_probe import (
     probe_audio_duration_ms,
 )
 from services.settings_validator import validate_render_settings
-from services.timeline_builder import build_timeline
-from services.timeline_validator import validate_timeline
+from services.speech_recognizer import (
+    SpeechRecognitionError,
+    SpeechTranscript,
+    transcribe_audio,
+)
+from services.timeline_builder import (
+    MixedTimelineModeError,
+    build_audio_timeline,
+    build_timeline,
+    timeline_mode_for_filenames,
+)
+from services.timeline_validator import validate_timeline, validate_timeline_for_fps
 from services.video_renderer import VideoRenderer
 from services.workspace_manager import WorkspaceManager
 from utils.time_utils import format_ms
@@ -68,6 +96,10 @@ class ProjectRecord:
     audio_path: Path | None = None
     audio_original_filename: str | None = None
     audio_duration_ms: int | None = None
+    audio_pauses: list[AudioPause] | None = None
+    speech_transcript: SpeechTranscript | None = None
+    audio_analysis_complete: bool = False
+    audio_analysis_warning: str | None = None
     timeline: list[TimelineItem] = field(default_factory=list)
     issues: list[ValidationIssue] = field(default_factory=list)
     render_thread: threading.Thread | None = None
@@ -95,6 +127,12 @@ class ProjectService:
         self._records: dict[str, ProjectRecord] = {}
         self._expired_ids: set[str] = set()
         self._lock = threading.RLock()
+        self._transcription_usage: deque[tuple[float, int]] = deque()
+        self._transcription_usage_lock = threading.Lock()
+        self._transcription_slots = asyncio.Semaphore(2)
+        self._audio_analysis_slots = asyncio.Semaphore(AUDIO_ANALYSIS_CONCURRENCY)
+        self._analysis_ffmpeg_slots = asyncio.Semaphore(AUDIO_ANALYSIS_CONCURRENCY)
+        self._render_slots = threading.Semaphore(RENDER_CONCURRENCY)
         self.ffmpeg_path, self.ffprobe_path, self.media_tool_errors = check_media_tools()
 
     def create_project(self) -> ProjectResponse:
@@ -175,6 +213,12 @@ class ProjectService:
         except OSError as exc:
             destination.unlink(missing_ok=True)
             raise filesystem_error(exc) from exc
+        except BaseException:
+            try:
+                destination.unlink(missing_ok=True)
+            except OSError:
+                LOGGER.warning("Не удалось очистить незавершённую загрузку %s", destination.name)
+            raise
         if size == 0:
             destination.unlink(missing_ok=True)
             raise ApiError(422, "empty_file", "Загруженный файл пуст.")
@@ -202,8 +246,20 @@ class ProjectService:
         record.completed_operations = 0
 
     def _rebuild_timeline(self, record: ProjectRecord) -> None:
-        items, build_issues = build_timeline(record.images)
-        validation_issues = validate_timeline(items)
+        mode = timeline_mode_for_filenames(record.images)
+        if mode == "timestamps":
+            items, build_issues = build_timeline(record.images)
+        elif record.audio_duration_ms is not None:
+            items, build_issues = build_audio_timeline(
+                record.images,
+                record.audio_duration_ms,
+                record.audio_pauses or [],
+                record.speech_transcript,
+                preferred_minimum_scene_ms=AUDIO_MINIMUM_SCENE_MS,
+            )
+        else:
+            items, build_issues = [], []
+        validation_issues = validate_timeline(items) if items else []
         seen: set[tuple[str, str | None]] = set()
         issues: list[ValidationIssue] = []
         for issue in [*build_issues, *validation_issues]:
@@ -222,6 +278,169 @@ class ProjectService:
                 record.status = "draft"
                 record.stage = "Проверка проекта"
                 record.message = "Нужно исправить ошибки или загрузить недостающие файлы."
+
+    def _reserve_transcription_budget(self, audio_duration_ms: int) -> bool:
+        now = time.monotonic()
+        limit_ms = round(OPENAI_TRANSCRIPTION_MAX_MINUTES_PER_HOUR * 60_000)
+        with self._transcription_usage_lock:
+            while self._transcription_usage and now - self._transcription_usage[0][0] >= 3600:
+                self._transcription_usage.popleft()
+            used_ms = sum(duration for _, duration in self._transcription_usage)
+            if used_ms + audio_duration_ms > limit_ms:
+                return False
+            self._transcription_usage.append((now, audio_duration_ms))
+            return True
+
+    async def _recognize_speech(
+        self,
+        record: ProjectRecord,
+        audio_path: Path,
+        audio_duration_ms: int,
+    ) -> SpeechTranscript:
+        if self.ffmpeg_path is None:
+            raise SpeechRecognitionError("FFmpeg недоступен для подготовки дорожки.")
+        prepared = record.workspace.prepared_dir / f"transcription_{uuid.uuid4().hex}.mp3"
+        try:
+            try:
+                async with self._analysis_ffmpeg_slots:
+                    await asyncio.to_thread(
+                        prepare_transcription_audio,
+                        audio_path,
+                        self.ffmpeg_path,
+                        prepared,
+                        audio_duration_ms,
+                    )
+                    prepared_size = prepared.stat().st_size
+            except (AudioAnalysisError, OSError) as exc:
+                raise SpeechRecognitionError(
+                    "Не удалось подготовить дорожку для распознавания."
+                ) from exc
+            if prepared_size > 24 * 1024 * 1024:
+                raise SpeechRecognitionError(
+                    "Подготовленная дорожка слишком велика для точного распознавания."
+                )
+            async with self._transcription_slots:
+                return await transcribe_audio(
+                    prepared,
+                    audio_duration_ms,
+                    api_key=OPENAI_API_KEY or "",
+                    base_url=OPENAI_API_BASE_URL,
+                    language=OPENAI_TRANSCRIPTION_LANGUAGE,
+                    timeout_seconds=OPENAI_TRANSCRIPTION_TIMEOUT_SECONDS,
+                )
+        finally:
+            try:
+                prepared.unlink(missing_ok=True)
+            except OSError:
+                LOGGER.warning(
+                    "Не удалось удалить временную дорожку распознавания проекта %s",
+                    record.project_id,
+                )
+
+    async def _detect_pauses(
+        self,
+        audio_path: Path,
+        audio_duration_ms: int,
+    ) -> list[AudioPause]:
+        async with self._analysis_ffmpeg_slots:
+            return await asyncio.to_thread(
+                detect_audio_pauses,
+                audio_path,
+                self.ffmpeg_path,
+                audio_duration_ms,
+                noise_db=AUDIO_SILENCE_NOISE_DB,
+                minimum_silence_ms=AUDIO_MINIMUM_SILENCE_MS,
+            )
+
+    async def _analyze_audio_for(
+        self,
+        record: ProjectRecord,
+        audio_path: Path | None,
+        audio_duration_ms: int | None,
+    ) -> tuple[list[AudioPause], SpeechTranscript | None, str | None]:
+        if audio_path is None or audio_duration_ms is None:
+            return [], None, None
+        if self.ffmpeg_path is None:
+            return [], None, (
+                "FFmpeg недоступен: кадры распределены равномерно без анализа пауз."
+            )
+
+        async with self._audio_analysis_slots:
+            return await self._analyze_audio_unlocked(
+                record,
+                audio_path,
+                audio_duration_ms,
+            )
+
+    async def _analyze_audio_unlocked(
+        self,
+        record: ProjectRecord,
+        audio_path: Path,
+        audio_duration_ms: int,
+    ) -> tuple[list[AudioPause], SpeechTranscript | None, str | None]:
+
+        pause_task = self._detect_pauses(audio_path, audio_duration_ms)
+        speech_task = None
+        speech_skip_warning: str | None = None
+        if not OPENAI_TRANSCRIPTION_ENABLED:
+            speech_skip_warning = (
+                "Распознавание фраз отключено; использованы локальные паузы. "
+                "Проверка границ относительно отдельных слов недоступна."
+            )
+        elif not OPENAI_API_KEY:
+            speech_skip_warning = (
+                "Серверный ключ распознавания не настроен; использованы локальные паузы. "
+                "Проверка границ относительно отдельных слов недоступна."
+            )
+        elif not self._reserve_transcription_budget(audio_duration_ms):
+            speech_skip_warning = (
+                "Часовой лимит распознавания исчерпан; использованы локальные паузы. "
+                "Проверка границ относительно отдельных слов недоступна."
+            )
+        else:
+            speech_task = self._recognize_speech(record, audio_path, audio_duration_ms)
+
+        if speech_task is None:
+            try:
+                pauses = await pause_task
+            except AudioAnalysisError as exc:
+                LOGGER.warning("Не удалось проанализировать паузы в аудиодорожке: %s", exc)
+                return [], None, (
+                    "Паузы не удалось определить; кадры распределены равномерно."
+                )
+            return pauses, None, speech_skip_warning
+
+        pause_result, speech_result = await asyncio.gather(
+            pause_task,
+            speech_task,
+            return_exceptions=True,
+        )
+        warnings: list[str] = []
+        if isinstance(pause_result, BaseException):
+            if not isinstance(pause_result, AudioAnalysisError):
+                raise pause_result
+            LOGGER.warning("Локальный анализ пауз завершился ошибкой: %s", pause_result)
+            pauses = []
+            warnings.append("Локальные паузы не определены.")
+        else:
+            pauses = pause_result
+        if isinstance(speech_result, BaseException):
+            if not isinstance(speech_result, SpeechRecognitionError):
+                raise speech_result
+            LOGGER.warning("Распознавание фраз завершилось ошибкой: %s", speech_result)
+            transcript = None
+            if pauses:
+                warnings.append(
+                    "Распознавание фраз недоступно; использован локальный анализ пауз. "
+                    "Проверка границ относительно отдельных слов недоступна."
+                )
+            else:
+                warnings.append(
+                    "Распознавание фраз недоступно; кадры распределены равномерно."
+                )
+        else:
+            transcript = speech_result
+        return pauses, transcript, " ".join(warnings) or None
 
     async def upload_images(self, project_id: str, uploads: list[UploadFile]) -> UploadResponse:
         record = self._get(project_id)
@@ -247,10 +466,11 @@ class ProjectService:
                     raise ApiError(415, "unsupported_image_type", f"Файл «{original_name}» имеет неподдерживаемое расширение.")
                 if self._mime(upload) not in IMAGE_MIME_TYPES:
                     raise ApiError(415, "invalid_image_mime", f"Файл «{original_name}» имеет недопустимый MIME-тип.")
-                try:
-                    parse_timestamp(original_name)
-                except TimestampParseError as exc:
-                    raise ApiError(422, "invalid_image_timestamp", str(exc)) from exc
+                if original_name.startswith("["):
+                    try:
+                        parse_timestamp(original_name)
+                    except TimestampParseError as exc:
+                        raise ApiError(422, "invalid_image_timestamp", str(exc)) from exc
                 stored = record.workspace.uploads_dir / f"image_{uuid.uuid4().hex}{extension}"
                 size = await self._stream_upload(
                     upload,
@@ -265,8 +485,40 @@ class ProjectService:
                     stored.unlink(missing_ok=True)
                     raise ApiError(422, "corrupted_image", str(exc)) from exc
                 staged.append(SourceImage(original_name, stored))
+            next_images = [*record.images, *staged]
+            folded_names = [source.original_filename.casefold() for source in next_images]
+            if len(folded_names) != len(set(folded_names)):
+                raise ApiError(
+                    422,
+                    "duplicate_image_filename",
+                    "Имена изображений должны быть уникальными, включая различия только в регистре.",
+                )
+            try:
+                timeline_mode = timeline_mode_for_filenames(next_images)
+            except TimestampParseError as exc:
+                raise ApiError(422, "invalid_image_timestamp", str(exc)) from exc
+            except MixedTimelineModeError as exc:
+                raise ApiError(422, "mixed_timeline_mode", str(exc)) from exc
+
+            analysis_result: tuple[list[AudioPause], SpeechTranscript | None, str | None] | None = None
+            if (
+                timeline_mode == "audio_pauses"
+                and record.audio_path is not None
+                and not record.audio_analysis_complete
+            ):
+                analysis_result = await self._analyze_audio_for(
+                    record,
+                    record.audio_path,
+                    record.audio_duration_ms,
+                )
             with record.lock:
                 record.images.extend(staged)
+                if analysis_result is not None:
+                    pauses, transcript, analysis_warning = analysis_result
+                    record.audio_pauses = pauses
+                    record.speech_transcript = transcript
+                    record.audio_analysis_warning = analysis_warning
+                    record.audio_analysis_complete = True
                 self._discard_result(record)
                 self._rebuild_timeline(record)
                 return UploadResponse(
@@ -276,9 +528,15 @@ class ProjectService:
                     audio_uploaded=record.audio_path is not None,
                     status=record.status,
                 )
-        except Exception:
+        except BaseException:
             for source in staged:
-                source.stored_path.unlink(missing_ok=True)
+                try:
+                    source.stored_path.unlink(missing_ok=True)
+                except OSError:
+                    LOGGER.warning(
+                        "Не удалось очистить незавершённую загрузку %s",
+                        source.stored_path.name,
+                    )
             raise
         finally:
             with record.lock:
@@ -300,6 +558,7 @@ class ProjectService:
             old_size = record.audio_path.stat().st_size if record.audio_path and record.audio_path.is_file() else 0
             record.mutation_in_progress = True
         stored = record.workspace.uploads_dir / f"audio_{uuid.uuid4().hex}{extension}"
+        committed = False
         try:
             await self._stream_upload(
                 upload,
@@ -313,22 +572,50 @@ class ProjectService:
                 stored.unlink(missing_ok=True)
                 raise ApiError(422, "corrupted_audio", str(exc)) from exc
 
+            timeline_mode = timeline_mode_for_filenames(record.images)
+            if record.images and timeline_mode == "audio_pauses":
+                pauses, transcript, analysis_warning = await self._analyze_audio_for(
+                    record,
+                    stored,
+                    duration_ms,
+                )
+                analysis_complete = True
+            else:
+                pauses, transcript, analysis_warning = [], None, None
+                analysis_complete = False
+
             with record.lock:
                 old_path = record.audio_path
                 record.audio_path = stored
                 record.audio_original_filename = original_name
                 record.audio_duration_ms = duration_ms
-                if old_path is not None and old_path != stored:
-                    old_path.unlink(missing_ok=True)
+                record.audio_pauses = pauses
+                record.speech_transcript = transcript
+                record.audio_analysis_complete = analysis_complete
+                record.audio_analysis_warning = analysis_warning
                 self._discard_result(record)
                 self._rebuild_timeline(record)
-                return UploadResponse(
+                response = UploadResponse(
                     project_id=project_id,
                     uploaded_count=1,
                     total_images=len(record.images),
                     audio_uploaded=True,
                     status=record.status,
                 )
+                committed = True
+            if old_path is not None and old_path != stored:
+                try:
+                    old_path.unlink(missing_ok=True)
+                except OSError:
+                    LOGGER.warning("Не удалось удалить прежнюю аудиодорожку проекта %s", project_id)
+            return response
+        except BaseException:
+            if not committed:
+                try:
+                    stored.unlink(missing_ok=True)
+                except OSError:
+                    LOGGER.warning("Не удалось очистить незавершённую загрузку %s", stored.name)
+            raise
         finally:
             with record.lock:
                 record.mutation_in_progress = False
@@ -340,8 +627,11 @@ class ProjectService:
             source = next((item for item in record.images if item.stored_path.name == image_id), None)
             if source is None:
                 raise ApiError(404, "image_not_found", "Изображение не найдено в проекте.")
+            try:
+                source.stored_path.unlink(missing_ok=True)
+            except OSError as exc:
+                raise filesystem_error(exc) from exc
             record.images.remove(source)
-            source.stored_path.unlink(missing_ok=True)
             self._discard_result(record)
             self._rebuild_timeline(record)
             return UploadResponse(
@@ -357,7 +647,6 @@ class ProjectService:
         with record.lock:
             if record.mutation_in_progress:
                 raise ApiError(409, "project_busy", "Дождитесь завершения загрузки файлов.")
-            self._rebuild_timeline(record)
             issues = list(record.issues)
             if record.audio_path is None:
                 issues.append(ValidationIssue("Аудиофайл не загружен."))
@@ -376,14 +665,78 @@ class ProjectService:
                     is_valid=item.is_valid,
                     errors=list(item.errors),
                     warnings=list(item.warnings),
+                    boundary_kind=item.boundary_kind,
                 )
                 for item in record.timeline
             ]
             timeline_end = items[-1].end_ms if items else None
             audio_duration = record.audio_duration_ms
             difference = audio_duration - timeline_end if audio_duration is not None and timeline_end is not None else None
+            timeline_mode = timeline_mode_for_filenames(record.images)
+            boundary_kinds = {item.boundary_kind for item in record.timeline[:-1]}
+            if timeline_mode == "timestamps":
+                analysis_method = "manual"
+            elif not record.timeline and record.speech_transcript is not None:
+                analysis_method = "unavailable"
+            elif boundary_kinds & {
+                "sentence_pause", "sentence_end", "segment_pause", "segment_end"
+            }:
+                analysis_method = "phrases_and_pauses"
+            elif boundary_kinds & {"long_pause", "short_pause"}:
+                analysis_method = "pauses"
+            elif "word_boundary" in boundary_kinds:
+                analysis_method = "word_boundaries"
+            else:
+                analysis_method = "even"
+            analysis_warnings: list[str] = []
+            if timeline_mode == "audio_pauses" and record.audio_analysis_warning:
+                analysis_warnings.append(record.audio_analysis_warning)
+            if timeline_mode == "audio_pauses" and record.speech_transcript is not None:
+                sentence_count = record.speech_transcript.estimated_sentence_count
+                internal_sentence_count = (
+                    record.speech_transcript.internal_sentence_boundary_count
+                )
+                required_transitions = max(0, len(record.images) - 1)
+                sentence_transitions = sum(
+                    item.boundary_kind in {"sentence_pause", "sentence_end"}
+                    for item in record.timeline[:-1]
+                )
+                if not record.timeline and required_transitions:
+                    analysis_warnings.append(
+                        f"Для {required_transitions} смен кадров не хватило безопасных "
+                        f"окончаний предложений и межсловных пауз "
+                        f"(всего распознано предложений: {sentence_count}). "
+                        "Таймлайн не построен, чтобы не разрезать речь."
+                    )
+                elif (
+                    internal_sentence_count < required_transitions
+                    or sentence_transitions < required_transitions
+                ):
+                    analysis_warnings.append(
+                        f"Для {required_transitions} смен кадров удалось использовать "
+                        f"{sentence_transitions} окончаний предложений "
+                        f"(всего распознано: {sentence_count}). Остальные границы выбраны "
+                        "по окончаниям фраз, паузам или безопасным промежуткам между словами."
+                    )
+                elif internal_sentence_count > required_transitions:
+                    analysis_warnings.append(
+                        f"Распознано предложений: {sentence_count}, кадров: {len(record.images)}. "
+                        "Некоторые соседние предложения останутся внутри одного кадра."
+                    )
             return TimelineResponse(
                 project_id=project_id,
+                timeline_mode=timeline_mode,
+                detected_pauses=(len(record.audio_pauses or []) if timeline_mode == "audio_pauses" else 0),
+                detected_sentences=(
+                    record.speech_transcript.estimated_sentence_count
+                    if timeline_mode == "audio_pauses" and record.speech_transcript is not None
+                    else 0
+                ),
+                transcription_used=(
+                    timeline_mode == "audio_pauses" and record.speech_transcript is not None
+                ),
+                analysis_method=analysis_method,
+                analysis_warning=" ".join(analysis_warnings) or None,
                 is_valid=not issues and bool(items) and audio_duration is not None,
                 items=items,
                 issues=[ValidationIssueResponse(message=issue.message, filename=issue.filename, critical=issue.critical) for issue in issues],
@@ -419,13 +772,15 @@ class ProjectService:
                 raise ApiError(422, "images_missing", "Добавьте хотя бы одно изображение.")
             if record.audio_path is None or record.audio_duration_ms is None:
                 raise ApiError(422, "audio_missing", "Добавьте корректный аудиофайл.")
-            self._rebuild_timeline(record)
             if record.issues:
                 raise ApiError(422, "timeline_invalid", "Таймлайн содержит критические ошибки.", {"issues": [issue.message for issue in record.issues]})
             if self.ffmpeg_path is None or self.ffprobe_path is None:
                 raise ApiError(503, "media_tools_unavailable", "FFmpeg или ffprobe не найдены на сервере.")
             settings = self._render_settings(payload)
-            setting_issues = validate_render_settings(settings)
+            setting_issues = [
+                *validate_render_settings(settings),
+                *validate_timeline_for_fps(record.timeline, settings.video.fps),
+            ]
             if setting_issues:
                 raise ApiError(422, "invalid_render_settings", setting_issues[0].message)
             self._discard_result(record)
@@ -459,6 +814,19 @@ class ProjectService:
         return round(start + (end - start) * fraction, 1)
 
     def _render_worker(self, record: ProjectRecord, settings: RenderSettings) -> None:
+        with self._render_slots:
+            if record.cancel_event.is_set():
+                with record.lock:
+                    record.touched_at = datetime.now(UTC)
+                    record.status = "cancelled"
+                    record.stage = "Отменено"
+                    record.message = "Рендеринг отменён до запуска."
+                    record.error = "Операция отменена пользователем."
+                    record.logs.append(record.message)
+                return
+            self._render_in_slot(record, settings)
+
+    def _render_in_slot(self, record: ProjectRecord, settings: RenderSettings) -> None:
         with record.lock:
             record.status = "rendering"
             record.stage = "Проверка файлов"

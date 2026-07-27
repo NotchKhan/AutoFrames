@@ -34,10 +34,17 @@ export interface TimelineRow {
   is_valid: boolean;
   errors: string[];
   warnings: string[];
+  boundary_kind: string;
 }
 
 export interface TimelineResponse {
   project_id: string;
+  timeline_mode: "timestamps" | "audio_pauses";
+  detected_pauses: number;
+  detected_sentences: number;
+  transcription_used: boolean;
+  analysis_method: "manual" | "phrases_and_pauses" | "pauses" | "word_boundaries" | "even" | "unavailable";
+  analysis_warning: string | null;
   is_valid: boolean;
   items: TimelineRow[];
   issues: ValidationIssue[];

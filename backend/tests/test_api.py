@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import time
 from datetime import UTC, datetime, timedelta
@@ -14,7 +15,14 @@ import services.video_renderer as renderer_module
 import services.workspace_manager as workspace_module
 from main import create_app
 from models.render import RenderResult
+from services.audio_analyzer import AudioAnalysisError, AudioPause
 from services.project_service import ProjectService
+from services.speech_recognizer import (
+    SpeechRecognitionError,
+    SpeechSegment,
+    SpeechTranscript,
+    SpeechWord,
+)
 
 
 def image_bytes(image_format: str = "JPEG") -> bytes:
@@ -34,7 +42,17 @@ def service(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ProjectService:
     monkeypatch.setattr(workspace_module, "OUTPUT_ROOT", output_root)
     monkeypatch.setattr(workspace_module, "LOG_ROOT", log_root)
     monkeypatch.setattr(renderer_module, "OUTPUT_ROOT", output_root)
+    monkeypatch.setattr(project_service_module, "OPENAI_API_KEY", None)
+    monkeypatch.setattr(project_service_module, "OPENAI_TRANSCRIPTION_ENABLED", False)
     monkeypatch.setattr(project_service_module, "probe_audio_duration_ms", lambda _path, _probe: 14_000)
+    monkeypatch.setattr(
+        project_service_module,
+        "detect_audio_pauses",
+        lambda _path, _ffmpeg, _duration, **_kwargs: [
+            AudioPause(4_700, 5_300),
+            AudioPause(9_500, 10_100),
+        ],
+    )
     current = ProjectService()
     current.ffmpeg_path = Path("ffmpeg")
     current.ffprobe_path = Path("ffprobe")
@@ -109,13 +127,365 @@ def test_duplicate_timestamps_are_reported(client: TestClient) -> None:
     assert any("одинаковое время окончания" in issue["message"] for issue in response.json()["issues"])
 
 
+def test_images_without_timestamps_are_synced_to_audio_pauses(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(project_service_module, "OPENAI_TRANSCRIPTION_ENABLED", True)
+    project_id = create_project(client)
+    files = [
+        ("files", ("scene_10.jpg", image_bytes(), "image/jpeg")),
+        ("files", ("scene_2.jpg", image_bytes(), "image/jpeg")),
+        ("files", ("scene_1.jpg", image_bytes(), "image/jpeg")),
+    ]
+    assert client.post(f"/api/projects/{project_id}/images", files=files).status_code == 200
+    audio = {"file": ("voice.wav", b"RIFF-valid-test-data", "audio/wav")}
+    assert client.post(f"/api/projects/{project_id}/audio", files=audio).status_code == 200
+
+    payload = client.get(f"/api/projects/{project_id}/timeline").json()
+    assert payload["is_valid"] is True
+    assert payload["timeline_mode"] == "audio_pauses"
+    assert payload["detected_pauses"] == 2
+    assert payload["transcription_used"] is False
+    assert payload["analysis_method"] == "pauses"
+    assert "ключ" in payload["analysis_warning"].lower()
+    assert [row["original_filename"] for row in payload["items"]] == [
+        "scene_1.jpg",
+        "scene_2.jpg",
+        "scene_10.jpg",
+    ]
+    assert [row["end_ms"] for row in payload["items"]] == [4_880, 9_680, 14_000]
+    assert payload["difference_ms"] == 0
+
+
+def test_high_quality_mode_uses_sentence_timestamps_and_caches_audio_analysis(
+    client: TestClient,
+    service: ProjectService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    async def recognize(
+        _self: ProjectService,
+        _record: object,
+        _path: Path,
+        _duration: int,
+    ) -> SpeechTranscript:
+        nonlocal calls
+        calls += 1
+        return SpeechTranscript(
+            "ru",
+            (
+                SpeechWord("Первая.", 500, 4_800),
+                SpeechWord("Вторая!", 5_400, 9_600),
+                SpeechWord("Финал", 10_200, 13_500),
+            ),
+            (
+                SpeechSegment("Первая.", 500, 4_800),
+                SpeechSegment("Вторая!", 5_400, 9_600),
+            ),
+        )
+
+    monkeypatch.setattr(project_service_module, "OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(project_service_module, "OPENAI_TRANSCRIPTION_ENABLED", True)
+    monkeypatch.setattr(ProjectService, "_recognize_speech", recognize)
+    service._transcription_usage.clear()
+    project_id = create_project(client)
+    first_batch = [
+        ("files", ("01.jpg", image_bytes(), "image/jpeg")),
+        ("files", ("02.jpg", image_bytes(), "image/jpeg")),
+    ]
+    assert client.post(f"/api/projects/{project_id}/images", files=first_batch).status_code == 200
+    audio = {"file": ("voice.wav", b"RIFF-valid-test-data", "audio/wav")}
+    assert client.post(f"/api/projects/{project_id}/audio", files=audio).status_code == 200
+
+    third = {"files": ("03.jpg", image_bytes(), "image/jpeg")}
+    assert client.post(f"/api/projects/{project_id}/images", files=third).status_code == 200
+    payload = client.get(f"/api/projects/{project_id}/timeline").json()
+
+    assert calls == 1
+    assert payload["transcription_used"] is True
+    assert payload["analysis_method"] == "phrases_and_pauses"
+    assert payload["detected_sentences"] == 3
+    assert [row["boundary_kind"] for row in payload["items"]] == [
+        "sentence_pause",
+        "sentence_pause",
+        "audio_end",
+    ]
+    assert payload["analysis_warning"] is None
+
+
+def test_speech_provider_failure_falls_back_to_local_pauses(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def recognize(*_args: object, **_kwargs: object) -> SpeechTranscript:
+        raise SpeechRecognitionError("provider unavailable")
+
+    monkeypatch.setattr(project_service_module, "OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(project_service_module, "OPENAI_TRANSCRIPTION_ENABLED", True)
+    monkeypatch.setattr(ProjectService, "_recognize_speech", recognize)
+    project_id = create_project(client)
+    files = [
+        ("files", ("01.jpg", image_bytes(), "image/jpeg")),
+        ("files", ("02.jpg", image_bytes(), "image/jpeg")),
+        ("files", ("03.jpg", image_bytes(), "image/jpeg")),
+    ]
+    assert client.post(f"/api/projects/{project_id}/images", files=files).status_code == 200
+    audio = {"file": ("voice.wav", b"RIFF-valid-test-data", "audio/wav")}
+    assert client.post(f"/api/projects/{project_id}/audio", files=audio).status_code == 200
+
+    payload = client.get(f"/api/projects/{project_id}/timeline").json()
+    assert payload["is_valid"] is True
+    assert payload["transcription_used"] is False
+    assert payload["analysis_method"] == "pauses"
+    assert "распознавание фраз недоступно" in payload["analysis_warning"].lower()
+
+
+def test_more_sentences_than_frames_is_reported(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def recognize(*_args: object, **_kwargs: object) -> SpeechTranscript:
+        return SpeechTranscript(
+            "ru",
+            (
+                SpeechWord("Раз.", 500, 2_000),
+                SpeechWord("Два.", 2_200, 4_500),
+                SpeechWord("Три.", 5_200, 7_500),
+                SpeechWord("Четыре.", 8_200, 13_000),
+            ),
+            (),
+        )
+
+    monkeypatch.setattr(project_service_module, "OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(project_service_module, "OPENAI_TRANSCRIPTION_ENABLED", True)
+    monkeypatch.setattr(ProjectService, "_recognize_speech", recognize)
+    project_id = create_project(client)
+    files = [
+        ("files", ("01.jpg", image_bytes(), "image/jpeg")),
+        ("files", ("02.jpg", image_bytes(), "image/jpeg")),
+    ]
+    assert client.post(f"/api/projects/{project_id}/images", files=files).status_code == 200
+    audio = {"file": ("voice.wav", b"RIFF-valid-test-data", "audio/wav")}
+    assert client.post(f"/api/projects/{project_id}/audio", files=audio).status_code == 200
+
+    payload = client.get(f"/api/projects/{project_id}/timeline").json()
+    assert payload["detected_sentences"] == 4
+    assert "некоторые соседние предложения" in payload["analysis_warning"].lower()
+
+
+def test_invalid_semantic_plan_reports_real_image_count(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def recognize(*_args: object, **_kwargs: object) -> SpeechTranscript:
+        return SpeechTranscript(
+            "ru",
+            (
+                SpeechWord("длинная", 100, 6_500),
+                SpeechWord("фраза", 6_600, 13_900),
+            ),
+            (),
+        )
+
+    monkeypatch.setattr(project_service_module, "OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(project_service_module, "OPENAI_TRANSCRIPTION_ENABLED", True)
+    monkeypatch.setattr(ProjectService, "_recognize_speech", recognize)
+    project_id = create_project(client)
+    files = [
+        ("files", (f"{index:02d}.jpg", image_bytes(), "image/jpeg"))
+        for index in range(1, 5)
+    ]
+    assert client.post(f"/api/projects/{project_id}/images", files=files).status_code == 200
+    audio = {"file": ("voice.wav", b"RIFF-valid-test-data", "audio/wav")}
+    assert client.post(f"/api/projects/{project_id}/audio", files=audio).status_code == 200
+
+    payload = client.get(f"/api/projects/{project_id}/timeline").json()
+    assert payload["is_valid"] is False
+    assert payload["analysis_method"] == "unavailable"
+    assert payload["items"] == []
+    assert "для 3 смен кадров" in payload["analysis_warning"].lower()
+
+
+def test_all_audio_analysis_failures_fall_back_to_even_timeline(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def recognize(*_args: object, **_kwargs: object) -> SpeechTranscript:
+        raise SpeechRecognitionError("provider unavailable")
+
+    def detect(*_args: object, **_kwargs: object) -> list[AudioPause]:
+        raise AudioAnalysisError("ffmpeg analysis failed")
+
+    monkeypatch.setattr(project_service_module, "OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(project_service_module, "OPENAI_TRANSCRIPTION_ENABLED", True)
+    monkeypatch.setattr(ProjectService, "_recognize_speech", recognize)
+    monkeypatch.setattr(project_service_module, "detect_audio_pauses", detect)
+    project_id = create_project(client)
+    files = [
+        ("files", ("01.jpg", image_bytes(), "image/jpeg")),
+        ("files", ("02.jpg", image_bytes(), "image/jpeg")),
+    ]
+    assert client.post(f"/api/projects/{project_id}/images", files=files).status_code == 200
+    audio = {"file": ("voice.wav", b"RIFF-valid-test-data", "audio/wav")}
+    assert client.post(f"/api/projects/{project_id}/audio", files=audio).status_code == 200
+
+    payload = client.get(f"/api/projects/{project_id}/timeline").json()
+    assert payload["is_valid"] is True
+    assert payload["analysis_method"] == "even"
+    assert payload["items"][0]["end_ms"] == 7_000
+    warning = payload["analysis_warning"].lower()
+    assert "локальные паузы не определены" in warning
+    assert "распознавание фраз недоступно" in warning
+
+
+def test_unexpected_speech_programming_error_is_not_silently_degraded(
+    client: TestClient,
+    service: ProjectService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def recognize(*_args: object, **_kwargs: object) -> SpeechTranscript:
+        raise RuntimeError("unexpected bug")
+
+    monkeypatch.setattr(project_service_module, "OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(project_service_module, "OPENAI_TRANSCRIPTION_ENABLED", True)
+    monkeypatch.setattr(ProjectService, "_recognize_speech", recognize)
+    project_id = create_project(client)
+    record = service._records[project_id]
+    audio_path = record.workspace.uploads_dir / "voice.wav"
+    audio_path.write_bytes(b"RIFF-valid-test-data")
+
+    with pytest.raises(RuntimeError, match="unexpected bug"):
+        asyncio.run(service._analyze_audio_for(record, audio_path, 14_000))
+
+
+def test_prepared_transcription_audio_is_removed_after_provider_failure(
+    client: TestClient,
+    service: ProjectService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def prepare(
+        _source: Path,
+        _ffmpeg: Path,
+        destination: Path,
+        _duration_ms: int,
+    ) -> Path:
+        destination.write_bytes(b"temporary-mp3")
+        return destination
+
+    async def transcribe(*_args: object, **_kwargs: object) -> SpeechTranscript:
+        raise SpeechRecognitionError("provider unavailable")
+
+    monkeypatch.setattr(project_service_module, "prepare_transcription_audio", prepare)
+    monkeypatch.setattr(project_service_module, "transcribe_audio", transcribe)
+    project_id = create_project(client)
+    record = service._records[project_id]
+    source = record.workspace.uploads_dir / "voice.wav"
+    source.write_bytes(b"RIFF-valid-test-data")
+
+    with pytest.raises(SpeechRecognitionError):
+        asyncio.run(service._recognize_speech(record, source, 14_000))
+    assert list(record.workspace.prepared_dir.glob("transcription_*.mp3")) == []
+
+
+def test_manual_timestamps_never_call_speech_recognition(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    async def recognize(*_args: object, **_kwargs: object) -> SpeechTranscript:
+        nonlocal calls
+        calls += 1
+        raise AssertionError("manual mode must not call speech recognition")
+
+    monkeypatch.setattr(project_service_module, "OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(project_service_module, "OPENAI_TRANSCRIPTION_ENABLED", True)
+    monkeypatch.setattr(ProjectService, "_recognize_speech", recognize)
+    project_id = create_project(client)
+    upload_valid_project(client, project_id)
+
+    payload = client.get(f"/api/projects/{project_id}/timeline").json()
+    assert calls == 0
+    assert not client.app.state.projects._transcription_usage
+    assert payload["timeline_mode"] == "timestamps"
+    assert payload["analysis_method"] == "manual"
+
+
+def test_mixed_manual_and_automatic_filenames_are_rejected(client: TestClient) -> None:
+    project_id = create_project(client)
+    files = [
+        ("files", ("[0-05]_manual.jpg", image_bytes(), "image/jpeg")),
+        ("files", ("02_auto.jpg", image_bytes(), "image/jpeg")),
+    ]
+    response = client.post(f"/api/projects/{project_id}/images", files=files)
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "mixed_timeline_mode"
+
+
+@pytest.mark.parametrize(
+    ("first_name", "second_name"),
+    [
+        ("[0-05]_manual.jpg", "02_auto.jpg"),
+        ("01_auto.jpg", "[0-05]_manual.jpg"),
+    ],
+)
+def test_mixed_mode_across_upload_batches_is_atomic(
+    client: TestClient,
+    service: ProjectService,
+    first_name: str,
+    second_name: str,
+) -> None:
+    project_id = create_project(client)
+    assert client.post(
+        f"/api/projects/{project_id}/images",
+        files={"files": (first_name, image_bytes(), "image/jpeg")},
+    ).status_code == 200
+
+    response = client.post(
+        f"/api/projects/{project_id}/images",
+        files={"files": (second_name, image_bytes(), "image/jpeg")},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "mixed_timeline_mode"
+    record = service._records[project_id]
+    assert [image.original_filename for image in record.images] == [first_name]
+    assert len(list(record.workspace.uploads_dir.glob("image_*"))) == 1
+
+
+def test_malformed_bracket_prefix_is_not_silently_treated_as_auto(client: TestClient) -> None:
+    project_id = create_project(client)
+    response = client.post(
+        f"/api/projects/{project_id}/images",
+        files={"files": ("[bad]_scene.jpg", image_bytes(), "image/jpeg")},
+    )
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "invalid_image_timestamp"
+
+
+def test_render_rejects_scenes_shorter_than_one_output_frame(client: TestClient) -> None:
+    project_id = create_project(client)
+    files = [
+        ("files", ("[0-00.010]_one.jpg", image_bytes(), "image/jpeg")),
+        ("files", ("[0-00.020]_two.jpg", image_bytes(), "image/jpeg")),
+    ]
+    assert client.post(f"/api/projects/{project_id}/images", files=files).status_code == 200
+    audio = {"file": ("voice.wav", b"RIFF-valid-test-data", "audio/wav")}
+    assert client.post(f"/api/projects/{project_id}/audio", files=audio).status_code == 200
+    response = client.post(f"/api/projects/{project_id}/render", json={})
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "invalid_render_settings"
+
+
 @pytest.mark.parametrize(
     ("filename", "content", "mime", "code"),
     [
         ("../[0-05]_escape.jpg", b"data", "image/jpeg", "unsafe_filename"),
         ("[0-05]_wrong.jpg", b"data", "text/plain", "invalid_image_mime"),
         ("[0-05]_broken.jpg", b"not-an-image", "image/jpeg", "corrupted_image"),
-        ("without-mark.jpg", b"data", "image/jpeg", "invalid_image_timestamp"),
+        ("unsupported.gif", b"data", "image/gif", "unsupported_image_type"),
     ],
 )
 def test_secure_image_upload_errors(
@@ -209,6 +579,36 @@ def test_cancel_render(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> N
             break
         time.sleep(0.01)
     assert payload["status"] == "cancelled"
+
+
+def test_cancel_render_while_waiting_for_worker_slot(
+    client: TestClient,
+    service: ProjectService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_id = create_project(client)
+    upload_valid_project(client, project_id)
+
+    class MustNotRunRenderer:
+        def __init__(self, *_args: object) -> None:
+            raise AssertionError("cancelled queued render must not start FFmpeg")
+
+    monkeypatch.setattr(project_service_module, "VideoRenderer", MustNotRunRenderer)
+    service._render_slots.acquire()
+    try:
+        assert client.post(f"/api/projects/{project_id}/render", json={}).status_code == 202
+        assert client.get(f"/api/projects/{project_id}/status").json()["status"] == "queued"
+        assert client.post(f"/api/projects/{project_id}/cancel").status_code == 200
+    finally:
+        service._render_slots.release()
+
+    for _ in range(100):
+        payload = client.get(f"/api/projects/{project_id}/status").json()
+        if payload["status"] == "cancelled":
+            break
+        time.sleep(0.01)
+    assert payload["status"] == "cancelled"
+    assert payload["message"] == "Рендеринг отменён до запуска."
 
 
 def test_delete_and_not_found(client: TestClient) -> None:

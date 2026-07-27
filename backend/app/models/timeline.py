@@ -25,6 +25,7 @@ class TimelineItem:
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     manually_overridden: bool = False
+    boundary_kind: str = "manual"
 
     @property
     def start_formatted(self) -> str:
@@ -44,4 +45,3 @@ class ValidationIssue:
     message: str
     filename: str | None = None
     critical: bool = True
-

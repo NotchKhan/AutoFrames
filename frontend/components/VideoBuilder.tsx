@@ -63,6 +63,7 @@ export function VideoBuilder() {
   const [phase, setPhase] = useState<UiPhase>("empty");
   const [busyMessage, setBusyMessage] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [deletingImageId, setDeletingImageId] = useState<string | null>(null);
 
   const renderActive = status !== null && ["queued", "rendering", "cancelling"].includes(status.status);
   const busy = phase === "uploading" || renderActive;
@@ -120,9 +121,9 @@ export function VideoBuilder() {
       setProjectId(project.project_id);
       setBusyMessage(`Загружаем ${images.length} изображений…`);
       await uploadImages(project.project_id, images);
-      setBusyMessage("Загружаем и проверяем аудиодорожку…");
+      setBusyMessage("Загружаем аудио, распознаём фразы и естественные паузы…");
       await uploadAudio(project.project_id, audio);
-      setBusyMessage("Строим непрерывный таймлайн…");
+      setBusyMessage("Собираем точный план смены сцен…");
       const checked = await getTimeline(project.project_id);
       setTimeline(checked);
       const difference = checked.difference_ms ?? 0;
@@ -140,19 +141,36 @@ export function VideoBuilder() {
   }
 
   async function removeImage(imageId: string) {
-    if (!projectId) return;
+    if (!projectId || deletingImageId) return;
+    const removedFilename = timeline?.items.find((item) => item.image_id === imageId)?.original_filename;
     setError(null);
+    setDeletingImageId(imageId);
     try {
       await deleteImage(projectId, imageId);
       setTimeline(await getTimeline(projectId));
+      if (removedFilename) {
+        setImages((current) => {
+          let removed = false;
+          return current.filter((file) => {
+            if (!removed && file.name === removedFilename) {
+              removed = true;
+              return false;
+            }
+            return true;
+          });
+        });
+      }
     } catch (deleteError) {
       setError(messageFromError(deleteError));
+    } finally {
+      setDeletingImageId(null);
     }
   }
 
   async function renderVideo() {
     if (!projectId || !timeline?.is_valid) return;
     setError(null);
+    setDeletingImageId(null);
     try {
       await startRender(projectId, settings);
       setStatus({ ...QUEUED_STATUS, project_id: projectId });
@@ -188,6 +206,7 @@ export function VideoBuilder() {
     setStatus(null);
     setPhase("empty");
     setError(null);
+    setDeletingImageId(null);
     if (previousId) {
       await deleteProject(previousId).catch(() => undefined);
     }
@@ -228,11 +247,11 @@ export function VideoBuilder() {
             <span className="hero-badge"><i aria-hidden="true" /> Монтаж без рутины</span>
             <h1>Кадры становятся <em>готовым видео.</em></h1>
             <p>
-              Добавьте изображения и озвучку — AutoFrames выстроит точный таймлайн,
-              синхронизирует каждый кадр и подготовит ролик к публикации.
+              Добавьте изображения и озвучку — AutoFrames найдёт окончания фраз и естественные
+              паузы, синхронизирует смену сцен и подготовит ролик к публикации.
             </p>
             <div className="hero-benefits" aria-label="Преимущества">
-              <span><i aria-hidden="true">✓</i> Точная синхронизация</span>
+              <span><i aria-hidden="true">✓</i> Синхронизация по речи</span>
               <span><i aria-hidden="true">✓</i> До 500 кадров</span>
               <span><i aria-hidden="true">✓</i> Любой формат</span>
             </div>
@@ -273,7 +292,7 @@ export function VideoBuilder() {
             <h2>От файлов до готового ролика</h2>
           </div>
           <nav className="stepper" aria-label="Этапы проекта">
-            {["Файлы", "Таймлайн", "Настройки", "Результат"].map((label, index) => (
+            {["Файлы", "Синхронизация", "Настройки", "Результат"].map((label, index) => (
               <div className={`step ${index < currentStep ? "done" : ""} ${index === currentStep ? "active" : ""}`} key={label}>
                 <span>{index < currentStep ? "✓" : index + 1}</span>
                 <strong>{label}</strong>
@@ -314,7 +333,7 @@ export function VideoBuilder() {
           <TimelineTable
             projectId={projectId}
             timeline={timeline}
-            disabled={busy}
+            disabled={busy || deletingImageId !== null}
             onDelete={(imageId) => void removeImage(imageId)}
           />
         )}

@@ -35,7 +35,7 @@ def create_project(request: Request) -> ProjectResponse:
 async def upload_images(
     project_id: str,
     request: Request,
-    files: list[UploadFile] = File(..., description="Изображения с метками времени в именах"),
+    files: list[UploadFile] = File(..., description="Изображения по порядку сцен или с ручными метками времени"),
 ) -> UploadResponse:
     """Безопасно загрузить набор изображений и проверить их через Pillow."""
     return await _projects(request).upload_images(project_id, files)
@@ -67,7 +67,7 @@ async def upload_audio(
 
 @router.get("/projects/{project_id}/timeline", response_model=TimelineResponse)
 def validate_project_timeline(project_id: str, request: Request) -> TimelineResponse:
-    """Построить отсортированный непрерывный таймлайн и вернуть все ошибки."""
+    """Синхронизировать сцены по аудио или ручным меткам и вернуть результат проверки."""
     return _projects(request).timeline_response(project_id)
 
 

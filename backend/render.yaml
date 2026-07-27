@@ -17,3 +17,15 @@ services:
         value: "500"
       - key: PROJECT_TTL_HOURS
         value: "24"
+      - key: OPENAI_TRANSCRIPTION_ENABLED
+        value: "false"
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_TRANSCRIPTION_LANGUAGE
+        value: "ru"
+      - key: OPENAI_TRANSCRIPTION_MAX_MINUTES_PER_HOUR
+        value: "120"
+      - key: AUDIO_ANALYSIS_CONCURRENCY
+        value: "2"
+      - key: RENDER_CONCURRENCY
+        value: "1"

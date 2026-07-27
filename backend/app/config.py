@@ -3,6 +3,12 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+load_dotenv(BACKEND_ROOT / ".env", override=False)
+
 
 def _positive_int(name: str, default: int) -> int:
     raw = os.getenv(name, str(default)).strip()
@@ -23,6 +29,28 @@ def _positive_float(name: str, default: float) -> float:
         raise RuntimeError(f"Переменная {name} должна быть числом.") from exc
     if value <= 0:
         raise RuntimeError(f"Переменная {name} должна быть больше нуля.")
+    return value
+
+
+def _boolean(name: str, default: bool) -> bool:
+    raw = os.getenv(name, "true" if default else "false").strip().casefold()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    raise RuntimeError(f"Переменная {name} должна быть true или false.")
+
+
+def _bounded_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    raw = os.getenv(name, str(default)).strip()
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"Переменная {name} должна быть целым числом.") from exc
+    if not minimum <= value <= maximum:
+        raise RuntimeError(
+            f"Переменная {name} должна быть в диапазоне от {minimum} до {maximum}."
+        )
     return value
 
 
@@ -65,7 +93,25 @@ MAX_TOTAL_IMAGE_BYTES = MAX_TOTAL_SIZE_MB * 1024 * 1024
 MAX_TOTAL_FILE_BYTES = MAX_TOTAL_SIZE_MB * 1024 * 1024
 PROJECT_TTL_HOURS = _positive_float("PROJECT_TTL_HOURS", 24.0)
 
-BACKEND_ROOT = Path(__file__).resolve().parents[1]
+# Высокоточная синхронизация использует серверный ключ только на backend.
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip() or None
+OPENAI_API_BASE_URL = os.getenv("OPENAI_API_BASE_URL", "https://api.openai.com/v1").strip().rstrip("/")
+OPENAI_TRANSCRIPTION_ENABLED = _boolean("OPENAI_TRANSCRIPTION_ENABLED", False)
+OPENAI_TRANSCRIPTION_LANGUAGE = os.getenv("OPENAI_TRANSCRIPTION_LANGUAGE", "").strip() or None
+OPENAI_TRANSCRIPTION_TIMEOUT_SECONDS = _positive_float(
+    "OPENAI_TRANSCRIPTION_TIMEOUT_SECONDS",
+    600.0,
+)
+OPENAI_TRANSCRIPTION_MAX_MINUTES_PER_HOUR = _positive_float(
+    "OPENAI_TRANSCRIPTION_MAX_MINUTES_PER_HOUR",
+    120.0,
+)
+AUDIO_MINIMUM_SCENE_MS = _positive_int("AUDIO_MINIMUM_SCENE_MS", 700)
+AUDIO_SILENCE_NOISE_DB = _bounded_int("AUDIO_SILENCE_NOISE_DB", -35, -90, -1)
+AUDIO_MINIMUM_SILENCE_MS = _positive_int("AUDIO_MINIMUM_SILENCE_MS", 280)
+AUDIO_ANALYSIS_CONCURRENCY = _bounded_int("AUDIO_ANALYSIS_CONCURRENCY", 2, 1, 8)
+RENDER_CONCURRENCY = _bounded_int("RENDER_CONCURRENCY", 1, 1, 8)
+
 STORAGE_ROOT = Path(os.getenv("STORAGE_ROOT", str(BACKEND_ROOT / "data"))).expanduser().resolve()
 TEMP_ROOT = STORAGE_ROOT / "projects"
 OUTPUT_ROOT = STORAGE_ROOT / "output"

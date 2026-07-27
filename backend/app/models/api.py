@@ -51,10 +51,24 @@ class TimelineRowResponse(BaseModel):
     is_valid: bool
     errors: list[str]
     warnings: list[str]
+    boundary_kind: str
 
 
 class TimelineResponse(BaseModel):
     project_id: str
+    timeline_mode: Literal["timestamps", "audio_pauses"]
+    detected_pauses: int = 0
+    detected_sentences: int = 0
+    transcription_used: bool = False
+    analysis_method: Literal[
+        "manual",
+        "phrases_and_pauses",
+        "pauses",
+        "word_boundaries",
+        "even",
+        "unavailable",
+    ]
+    analysis_warning: str | None = None
     is_valid: bool
     items: list[TimelineRowResponse]
     issues: list[ValidationIssueResponse]

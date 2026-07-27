@@ -48,7 +48,7 @@ export function FileUpload({
           <div>
             <span className="eyebrow">Новый проект</span>
             <h2 id="upload-title">Добавьте материалы</h2>
-            <p className="section-description">Выберите изображения с временными метками и одну дорожку озвучки.</p>
+            <p className="section-description">Выберите изображения по порядку сцен и одну дорожку озвучки.</p>
           </div>
         </div>
         <span className="format-hint">До 500 кадров</span>
@@ -124,15 +124,15 @@ export function FileUpload({
       </div>
 
       <div className="tip-row">
-        <span className="tip-example" aria-hidden="true">[1-15]</span>
+        <span className="tip-example" aria-hidden="true">01 → 02</span>
         <div>
-          <strong>Метка означает время окончания кадра</strong>
-          <p><code>[1-15]_scene.jpg</code> будет показываться до 01:15. Начало рассчитается автоматически.</p>
+          <strong>Временные метки больше не обязательны</strong>
+          <p>Назовите кадры <code>01_scene.jpg</code>, <code>02_scene.jpg</code> и далее — смены подстроятся под окончания фраз и паузы.</p>
         </div>
       </div>
 
       <div className="panel-actions">
-        <p className="muted">Порядок выбора не важен — кадры автоматически встанут на свои места.</p>
+        <p className="muted">Порядок определяется по номерам. Старые метки <code>[MM-SS]</code> поддерживаются отдельным режимом — не смешивайте их с обычными именами.</p>
         <button
           type="button"
           className="primary-button"
@@ -140,7 +140,7 @@ export function FileUpload({
           onClick={onSubmit}
         >
           {disabled ? <span className="spinner" aria-hidden="true" /> : null}
-          Построить таймлайн
+          Синхронизировать по звуку
           {!disabled && <span aria-hidden="true">→</span>}
         </button>
       </div>
