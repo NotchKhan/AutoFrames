@@ -125,6 +125,9 @@ AUDIO_SILENCE_NOISE_DB = _bounded_int("AUDIO_SILENCE_NOISE_DB", -35, -90, -1)
 AUDIO_MINIMUM_SILENCE_MS = _positive_int("AUDIO_MINIMUM_SILENCE_MS", 280)
 AUDIO_ANALYSIS_CONCURRENCY = _bounded_int("AUDIO_ANALYSIS_CONCURRENCY", 2, 1, 8)
 RENDER_CONCURRENCY = _bounded_int("RENDER_CONCURRENCY", 1, 1, 8)
+# Один поток заметно снижает пиковое потребление памяти libx264 на небольших
+# облачных инстансах. Разрешение, FPS, CRF и preset при этом не меняются.
+FFMPEG_RENDER_THREADS = _bounded_int("FFMPEG_RENDER_THREADS", 1, 1, 8)
 
 STORAGE_ROOT = Path(os.getenv("STORAGE_ROOT", str(BACKEND_ROOT / "data"))).expanduser().resolve()
 TEMP_ROOT = STORAGE_ROOT / "projects"

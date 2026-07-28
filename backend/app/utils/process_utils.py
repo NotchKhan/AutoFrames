@@ -14,10 +14,20 @@ class ProcessCancelled(RuntimeError):
 
 class ProcessExecutionError(RuntimeError):
     def __init__(self, command_name: str, returncode: int, log_path: Path) -> None:
+        if returncode == -9:
+            message = (
+                f"{command_name} был принудительно остановлен системой (сигнал 9). "
+                "Обычно это означает нехватку оперативной памяти на сервере. "
+                "Технические подробности сохранены в журнале проекта."
+            )
+        else:
+            message = (
+                f"{command_name} не смог завершить операцию (код {returncode}). "
+                "Проверьте свободное место, права записи и входные файлы. "
+                "Технические подробности сохранены в журнале проекта."
+            )
         super().__init__(
-            f"{command_name} не смог завершить операцию (код {returncode}). "
-            "Проверьте свободное место, права записи и входные файлы. "
-            "Технические подробности сохранены в журнале проекта."
+            message
         )
         self.returncode = returncode
         self.log_path = log_path

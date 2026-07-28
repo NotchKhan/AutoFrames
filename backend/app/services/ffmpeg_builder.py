@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from config import FFMPEG_RENDER_THREADS
 from models.render import AudioSettings, VideoSettings
 from utils.time_utils import ms_to_ffmpeg_time
 
@@ -91,6 +92,7 @@ def clip_command(
 ) -> list[str]:
     return [
         str(ffmpeg), "-y", "-hide_banner", "-loglevel", "warning",
+        "-filter_threads", str(FFMPEG_RENDER_THREADS),
         "-loop", "1", "-framerate", str(settings.fps), "-i", str(image),
         "-vf", video_filter(
             settings,
@@ -101,6 +103,12 @@ def clip_command(
         ),
         "-frames:v", str(frames), "-an", "-c:v", "libx264",
         "-preset", settings.preset, "-crf", str(settings.crf),
+        "-threads:v", str(FFMPEG_RENDER_THREADS),
+        "-x264-params",
+        (
+            f"threads={FFMPEG_RENDER_THREADS}:"
+            "lookahead-threads=1:sync-lookahead=0"
+        ),
         "-pix_fmt", "yuv420p", "-r", str(settings.fps), "-fps_mode", "cfr",
         "-video_track_timescale", "90000", str(output),
     ]

@@ -83,6 +83,25 @@ def test_full_source_pan_command_crops_across_the_prepared_canvas(tmp_path: Path
     assert "zoompan" not in filter_graph
 
 
+def test_clip_command_limits_encoder_and_filter_threads(tmp_path: Path) -> None:
+    command = clip_command(
+        Path("ffmpeg"),
+        tmp_path / "prepared.png",
+        tmp_path / "clip.mp4",
+        VideoSettings(width=1920, height=1080, fps=30, preset="medium", crf=20),
+        "none",
+        90,
+        3_000,
+    )
+
+    assert command[command.index("-filter_threads") + 1] == "1"
+    assert command[command.index("-threads:v") + 1] == "1"
+    x264_params = command[command.index("-x264-params") + 1]
+    assert "threads=1" in x264_params
+    assert "lookahead-threads=1" in x264_params
+    assert "sync-lookahead=0" in x264_params
+
+
 def test_prepare_image_flattens_transparency_onto_configured_background(
     tmp_path: Path,
 ) -> None:

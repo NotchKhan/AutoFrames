@@ -267,6 +267,7 @@ Workflow `.github/workflows/ci.yml` повторяет эти проверки �
 | `OPENAI_TRANSCRIPTION_MAX_MINUTES_PER_HOUR` | `120` | локальный почасовой лимит распознаваемого аудио на один backend-процесс |
 | `AUDIO_ANALYSIS_CONCURRENCY` | `2` | максимум одновременно анализируемых дорожек и FFmpeg-процессов анализа |
 | `RENDER_CONCURRENCY` | `1` | максимум одновременно выполняемых FFmpeg-рендеров; остальные проекты ждут в очереди |
+| `FFMPEG_RENDER_THREADS` | `1` | число потоков FFmpeg/libx264 на один рендер; `1` предотвращает нехватку RAM на небольших Railway-инстансах без снижения разрешения, FPS и CRF |
 | `AUDIO_MINIMUM_SCENE_MS` | `700` | рекомендуемая минимальная длительность сцены |
 | `AUDIO_SILENCE_NOISE_DB` | `-35` | порог тишины для FFmpeg `silencedetect` |
 | `AUDIO_MINIMUM_SILENCE_MS` | `280` | минимальная длительность распознаваемой паузы |
