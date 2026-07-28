@@ -359,27 +359,29 @@ git push -u origin main
 
 1. Создайте в Railway новый проект через **Deploy from GitHub repo**.
 2. Выберите тот же репозиторий `NotchKhan/AutoFrames`.
-3. В настройках сервиса укажите **Root Directory**: `backend`.
-4. Railway обнаружит `Dockerfile` и `railway.json`.
-5. Добавьте `FRONTEND_ORIGIN`, `MAX_FILE_SIZE_MB`, `MAX_TOTAL_SIZE_MB`, `MAX_IMAGE_COUNT` и `PROJECT_TTL_HOURS`.
-6. Если backend закрыт корпоративным SSO/identity-aware proxy, для высокоточного режима дополнительно задайте секрет `OPENAI_API_KEY` и `OPENAI_TRANSCRIPTION_ENABLED=true`. На публичном API оставьте режим выключенным.
-7. Подключите постоянный volume и смонтируйте его в `/data`; установите `STORAGE_ROOT=/data`.
-8. Сгенерируйте публичный HTTPS-домен backend.
-9. Проверьте `https://BACKEND-DOMAIN/health` и `/docs`.
-10. Вставьте домен в `NEXT_PUBLIC_API_URL` проекта Vercel и выполните Redeploy.
-11. Оставьте Railway auto-deploy включённым — каждый push в подключённую ветку пересоберёт backend.
+3. В настройках сервиса укажите **Root Directory**: `/backend`, а в **Config File Path** — `/backend/railway.json`. Путь к конфигурации задаётся от корня репозитория и не наследует Root Directory.
+4. Подключите постоянный volume и смонтируйте его в `/data`; задайте `STORAGE_ROOT=/data` и `RAILWAY_RUN_UID=0`. Образ по умолчанию работает от пользователя `app`, а Railway монтирует volume с владельцем root, поэтому без этой настройки каталог может оказаться недоступен для записи.
+5. Не задавайте `PORT` вручную: Railway передаёт его при запуске, а `entrypoint.py` уже использует значение платформы.
+6. Для заявленных лимитов выбирайте как минимум Hobby с volume 5 GB; рекомендуется 10 GB, особенно для проектов до 2 GB и 500 изображений. Доступность, названия, цены и лимиты тарифов могут меняться — проверьте их в текущем аккаунте Railway перед публикацией.
+7. Добавьте `FRONTEND_ORIGIN`, `MAX_FILE_SIZE_MB`, `MAX_TOTAL_SIZE_MB`, `MAX_IMAGE_COUNT` и `PROJECT_TTL_HOURS`.
+8. Если backend закрыт корпоративным SSO/identity-aware proxy, для высокоточного режима дополнительно задайте секрет `OPENAI_API_KEY` и `OPENAI_TRANSCRIPTION_ENABLED=true`. На публичном API оставьте режим выключенным.
+9. Оставьте одну реплику/worker: очереди анализа и рендеринга хранятся в памяти процесса, а проекты — на локальном volume.
+10. Сгенерируйте публичный HTTPS-домен backend.
+11. Проверьте `https://BACKEND-DOMAIN/health` и `/docs`.
+12. Вставьте домен в `NEXT_PUBLIC_API_URL` проекта Vercel и выполните Redeploy.
+13. Оставьте Railway auto-deploy включённым — каждый push в подключённую ветку пересоберёт backend.
 
 ## Размещение backend на Render
 
-1. Создайте **New → Web Service** или Blueprint из GitHub.
-2. Выберите репозиторий `NotchKhan/AutoFrames`.
-3. Для Web Service укажите **Root Directory**: `backend`, среду **Docker** и Dockerfile `./Dockerfile`.
-4. Укажите health-check path `/health`.
-5. Добавьте backend-переменные окружения. Облачное распознавание в `render.yaml` намеренно выключено; включайте его вместе с секретом `OPENAI_API_KEY` только после защиты API корпоративным доступом.
-6. Для сохранения проектов между перезапусками подключите persistent disk в `/data` и задайте `STORAGE_ROOT=/data`.
+1. Создайте Blueprint из GitHub и при настройке укажите **Blueprint Path**: `backend/render.yaml` — файл находится во вложенном каталоге и не будет найден по стандартному пути в корне.
+2. Для ручного **New → Web Service** выберите репозиторий `NotchKhan/AutoFrames`, среду **Docker**, **Root Directory** `backend`, Dockerfile `./backend/Dockerfile` и Docker context `./backend`. Пути Dockerfile и context в Render задаются от корня репозитория.
+3. Укажите health-check path `/health`.
+4. Для FFmpeg рекомендуется как минимум инстанс Standard с 2 GB RAM. Названия, цены и доступность тарифов могут меняться — проверьте текущие варианты в аккаунте Render.
+5. Подключите persistent disk в `/data`, задайте `STORAGE_ROOT=/data` и оставьте одну реплику. Для заявленных лимитов рекомендуется диск 10 GB; его наличие и максимальный размер зависят от тарифа.
+6. Добавьте backend-переменные окружения. Облачное распознавание в `render.yaml` намеренно выключено; включайте его вместе с секретом `OPENAI_API_KEY` только после защиты API корпоративным доступом.
 7. После успешного deploy получите HTTPS URL backend.
 8. Добавьте URL в `NEXT_PUBLIC_API_URL` Vercel и выполните Redeploy frontend.
-9. Включите **Auto-Deploy: Yes**. Файл `backend/render.yaml` также содержит готовую конфигурацию сервиса.
+9. Включите **Auto-Deploy: Yes**. Blueprint создаёт сервис из `backend/render.yaml`, но размер инстанса и persistent disk проверьте и настройте отдельно.
 
 ## Безопасность
 

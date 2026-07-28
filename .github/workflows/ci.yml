@@ -57,8 +57,8 @@ jobs:
       - name: Собрать production-версию
         working-directory: frontend
         env:
-          NEXT_PUBLIC_API_URL: http://localhost:8000
-        run: npm run build
+          NEXT_PUBLIC_API_URL: https://api.example.com
+        run: npm run build:vercel
 
   containers:
     name: Docker Compose · build
