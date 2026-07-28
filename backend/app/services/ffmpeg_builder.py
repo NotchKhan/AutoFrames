@@ -6,12 +6,35 @@ from models.render import AudioSettings, VideoSettings
 from utils.time_utils import ms_to_ffmpeg_time
 
 
-def video_filter(settings: VideoSettings, effect: str, frames: int, duration_ms: int) -> str:
+def video_filter(
+    settings: VideoSettings,
+    effect: str,
+    frames: int,
+    duration_ms: int,
+    *,
+    full_source_pan: bool = False,
+) -> str:
     filters: list[str] = []
     last_frame = max(frames - 1, 1)
     strength = max(0.001, min(settings.motion_strength * settings.motion_speed, 0.35))
     progress = f"on/{last_frame}"
-    if effect == "zoom_in":
+    if full_source_pan and effect in {"left_right", "right_left", "top_bottom", "bottom_top"}:
+        x = f"(iw-{settings.width})*n/{last_frame}"
+        y = f"(ih-{settings.height})/2"
+        if effect == "right_left":
+            x = f"(iw-{settings.width})*(1-n/{last_frame})"
+        elif effect == "top_bottom":
+            x, y = f"(iw-{settings.width})/2", f"(ih-{settings.height})*n/{last_frame}"
+        elif effect == "bottom_top":
+            x, y = (
+                f"(iw-{settings.width})/2",
+                f"(ih-{settings.height})*(1-n/{last_frame})",
+            )
+        filters.extend([
+            f"crop=w={settings.width}:h={settings.height}:x='{x}':y='{y}'",
+            f"fps={settings.fps}",
+        ])
+    elif effect == "zoom_in":
         zoom = f"1+{strength:.6f}*{progress}"
         filters.append(
             f"zoompan=z='{zoom}':x='iw/2-iw/zoom/2':y='ih/2-ih/zoom/2':"
@@ -63,11 +86,19 @@ def clip_command(
     effect: str,
     frames: int,
     duration_ms: int,
+    *,
+    full_source_pan: bool = False,
 ) -> list[str]:
     return [
         str(ffmpeg), "-y", "-hide_banner", "-loglevel", "warning",
         "-loop", "1", "-framerate", str(settings.fps), "-i", str(image),
-        "-vf", video_filter(settings, effect, frames, duration_ms),
+        "-vf", video_filter(
+            settings,
+            effect,
+            frames,
+            duration_ms,
+            full_source_pan=full_source_pan,
+        ),
         "-frames:v", str(frames), "-an", "-c:v", "libx264",
         "-preset", settings.preset, "-crf", str(settings.crf),
         "-pix_fmt", "yuv420p", "-r", str(settings.fps), "-fps_mode", "cfr",

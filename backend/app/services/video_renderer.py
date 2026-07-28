@@ -7,11 +7,13 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from PIL import Image, UnidentifiedImageError
+
 from config import OUTPUT_ROOT, SYNC_TOLERANCE_MS
 from models.render import RenderResult, RenderSettings
 from models.timeline import TimelineItem
 from services.ffmpeg_builder import clip_command, concat_command, mux_command
-from services.image_processor import create_black_frame, prepare_image
+from services.image_processor import MotionAxis, create_black_frame, prepare_image
 from services.media_probe import MediaProbeError, summarize_output
 from services.resource_estimator import disk_estimate
 from services.settings_validator import validate_render_settings
@@ -39,6 +41,40 @@ def _base_segments(items: Sequence[TimelineItem]) -> list[RenderSegment]:
         RenderSegment(item.stored_path, item.original_filename, item.start_ms, item.end_ms, item.index)
         for item in items
     ]
+
+
+def choose_smart_motion_effect(
+    source_path: Path | None,
+    position: int,
+    duration_ms: int,
+    target_width: int,
+    target_height: int,
+    scale_mode: str = "cover",
+) -> str:
+    """Выбирает спокойное движение по геометрии исходника и длине сцены."""
+    if source_path is None or duration_ms < 1_200:
+        return "none"
+    fallback = "zoom_in" if position % 2 else "zoom_out"
+    if scale_mode != "cover":
+        return fallback
+    try:
+        with Image.open(source_path) as image:
+            source_width, source_height = image.size
+            orientation = int(image.getexif().get(274, 1))
+            if orientation in {5, 6, 7, 8}:
+                source_width, source_height = source_height, source_width
+    except (OSError, UnidentifiedImageError, ValueError):
+        return fallback
+    if source_width <= 0 or source_height <= 0 or target_width <= 0 or target_height <= 0:
+        return fallback
+
+    source_ratio = source_width / source_height
+    target_ratio = target_width / target_height
+    if source_ratio > target_ratio * 1.18:
+        return "left_right" if position % 2 else "right_left"
+    if source_ratio < target_ratio / 1.18:
+        return "top_bottom" if position % 2 else "bottom_top"
+    return fallback
 
 
 def build_render_plan(
@@ -184,7 +220,40 @@ class VideoRenderer:
                 )
 
             callback("Подготовка изображений", 0, len(quantized), "Обработка EXIF и масштаба")
+            effects = [
+                "zoom_in", "zoom_out", "left_right", "right_left", "top_bottom", "bottom_top"
+            ]
+            rng = random.Random(settings.video.seed)
+            resolved_effects: list[str] = []
+            motion_axis_by_source: dict[Path, MotionAxis] = {}
+            for position, (segment, frames, _first) in enumerate(quantized, start=1):
+                duration_ms = round(frames * 1000 / fps)
+                if settings.video.motion_mode == "smart":
+                    effect = choose_smart_motion_effect(
+                        segment.source_path,
+                        position,
+                        duration_ms,
+                        settings.video.width,
+                        settings.video.height,
+                        settings.video.scale_mode,
+                    )
+                elif settings.video.motion_mode == "auto":
+                    effect = (
+                        rng.choice(effects)
+                        if settings.video.alternate_randomly
+                        else effects[(position - 1) % len(effects)]
+                    )
+                else:
+                    effect = settings.video.motion_mode
+                resolved_effects.append(effect)
+                if settings.video.motion_mode == "smart" and segment.source_path is not None:
+                    if effect in {"left_right", "right_left"}:
+                        motion_axis_by_source[segment.source_path] = "horizontal"
+                    elif effect in {"top_bottom", "bottom_top"}:
+                        motion_axis_by_source[segment.source_path] = "vertical"
+
             prepared_by_source: dict[Path | None, Path] = {}
+            prepared_size_by_source: dict[Path | None, tuple[int, int]] = {}
             for position, (segment, _frames, _first) in enumerate(quantized, start=1):
                 if cancel.is_set():
                     raise ProcessCancelled("Операция отменена пользователем.")
@@ -192,31 +261,47 @@ class VideoRenderer:
                     prepared = self.workspace.prepared_dir / f"{position:06d}.png"
                     if segment.source_path is None:
                         create_black_frame(prepared, settings.video.width, settings.video.height)
+                        prepared_size_by_source[segment.source_path] = (
+                            settings.video.width,
+                            settings.video.height,
+                        )
                     else:
-                        prepare_image(segment.source_path, prepared, settings.video)
+                        prepared_size_by_source[segment.source_path] = prepare_image(
+                            segment.source_path,
+                            prepared,
+                            settings.video,
+                            motion_axis=motion_axis_by_source.get(segment.source_path),
+                        )
                     prepared_by_source[segment.source_path] = prepared
                 callback(
                     "Подготовка изображений", position, len(quantized),
                     f"Подготовлен кадр {position}/{len(quantized)}: {segment.original_filename}",
                 )
 
-            effects = [
-                "zoom_in", "zoom_out", "left_right", "right_left", "top_bottom", "bottom_top"
-            ]
-            rng = random.Random(settings.video.seed)
             clip_paths: list[Path] = []
             callback("Создание видеоклипов", 0, len(quantized), "Запуск FFmpeg")
-            for position, (segment, frames, _first) in enumerate(quantized, start=1):
-                if settings.video.motion_mode == "auto":
-                    effect = rng.choice(effects) if settings.video.alternate_randomly else effects[(position - 1) % len(effects)]
-                else:
-                    effect = settings.video.motion_mode
-                clip = self.workspace.clips_dir / f"{position:06d}.mp4"
+            for position, ((segment, frames, _first), effect) in enumerate(
+                zip(quantized, resolved_effects, strict=True),
+                start=1,
+            ):
                 duration_ms = round(frames * 1000 / fps)
+                prepared_width, prepared_height = prepared_size_by_source[segment.source_path]
+                full_source_pan = settings.video.motion_mode == "smart" and (
+                    (
+                        effect in {"left_right", "right_left"}
+                        and prepared_width > settings.video.width
+                    )
+                    or (
+                        effect in {"top_bottom", "bottom_top"}
+                        and prepared_height > settings.video.height
+                    )
+                )
+                clip = self.workspace.clips_dir / f"{position:06d}.mp4"
                 run_process(
                     clip_command(
                         self.ffmpeg, prepared_by_source[segment.source_path], clip,
                         settings.video, effect, frames, duration_ms,
+                        full_source_pan=full_source_pan,
                     ),
                     log_path, cancel,
                 )

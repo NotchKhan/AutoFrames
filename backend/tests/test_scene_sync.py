@@ -3,7 +3,13 @@ from __future__ import annotations
 import pytest
 
 from services.audio_analyzer import AudioPause
-from services.scene_sync import plan_scene_boundaries
+from services.scene_sync import (
+    _maximum_feasible_minimum,
+    _prune_planning_candidates,
+    _speech_progress_by_candidate,
+    build_boundary_candidates,
+    plan_scene_boundaries,
+)
 from services.speech_recognizer import SpeechSegment, SpeechTranscript, SpeechWord
 from utils.time_utils import frame_index
 
@@ -158,3 +164,153 @@ def test_pause_order_does_not_change_result() -> None:
     forward = plan_scene_boundaries(10_000, 3, pauses)
     backward = plan_scene_boundaries(10_000, 3, list(reversed(pauses)))
     assert forward == backward
+
+
+def test_many_images_use_multiple_safe_points_inside_long_internal_pauses() -> None:
+    speech = transcript(
+        [
+            ("Первая.", 500, 1_500),
+            ("Вторая.", 6_000, 7_000),
+            ("Финал", 10_000, 11_000),
+        ],
+        [
+            ("Первая.", 500, 1_500),
+            ("Вторая.", 6_000, 7_000),
+        ],
+    )
+
+    decisions = plan_scene_boundaries(12_000, 7, [], speech)
+    points = [0, *(item.time_ms for item in decisions), 12_000]
+
+    assert len(decisions) == 6
+    assert sum(item.kind == "fallback" for item in decisions) >= 2
+    assert all(end - start >= 700 for start, end in zip(points, points[1:]))
+    assert all(
+        not any(word_start < item.time_ms < word_end for _word, word_start, word_end in [
+            ("Первая.", 500, 1_500),
+            ("Вторая.", 6_000, 7_000),
+            ("Финал", 10_000, 11_000),
+        ])
+        for item in decisions
+    )
+
+
+@pytest.mark.parametrize(
+    "words",
+    [
+        [("первое", 8_000, 8_800), ("финал", 9_200, 9_800)],
+        [("первое", 200, 1_000), ("финал", 1_400, 2_000)],
+    ],
+)
+def test_leading_or_trailing_silence_is_never_filled_with_extra_transitions(
+    words: list[tuple[str, int, int]],
+) -> None:
+    speech = transcript(words)
+
+    with pytest.raises(ValueError, match="Недостаточно безопасных"):
+        plan_scene_boundaries(10_000, 3, [], speech)
+
+
+def test_minimum_scene_duration_relaxes_only_when_preferred_value_is_impossible() -> None:
+    speech = transcript([
+        ("один", 50, 200),
+        ("два", 500, 1_000),
+        ("три", 1_900, 2_300),
+    ])
+
+    decisions = plan_scene_boundaries(2_400, 3, [], speech)
+    points = [0, *(item.time_ms for item in decisions), 2_400]
+    durations = [end - start for start, end in zip(points, points[1:])]
+
+    assert len(decisions) == 2
+    assert durations == [1_180, 640, 580]
+
+
+def test_strategies_offer_semantic_or_even_word_safe_distribution() -> None:
+    speech = transcript([
+        ("Раз.", 200, 1_800),
+        ("два", 2_000, 3_800),
+        ("три", 4_000, 4_900),
+        ("четыре", 5_100, 6_800),
+        ("Пять.", 7_000, 8_200),
+        ("финал", 8_400, 9_500),
+    ])
+
+    adaptive = plan_scene_boundaries(10_000, 2, [], speech, strategy="adaptive")
+    semantic = plan_scene_boundaries(10_000, 2, [], speech, strategy="semantic")
+    even = plan_scene_boundaries(10_000, 2, [], speech, strategy="even")
+
+    assert adaptive[0].kind == "sentence_end"
+    assert semantic[0].kind == "sentence_end"
+    assert semantic[0].time_ms < 2_000
+    assert even[0].kind == "word_boundary"
+    assert 4_900 < even[0].time_ms < 5_100
+    for decision in [*adaptive, *semantic, *even]:
+        assert not any(
+            start_ms < decision.time_ms < end_ms
+            for _text, start_ms, end_ms in [
+                ("Раз.", 200, 1_800),
+                ("два", 2_000, 3_800),
+                ("три", 4_000, 4_900),
+                ("четыре", 5_100, 6_800),
+                ("Пять.", 7_000, 8_200),
+                ("финал", 8_400, 9_500),
+            ]
+        )
+
+
+def test_adaptive_plan_scales_to_many_photos_and_keeps_every_word_intact() -> None:
+    words = [
+        (f"слово-{index}", index * 1_000 + 100, index * 1_000 + 500)
+        for index in range(60)
+    ]
+    speech = transcript(words)
+
+    decisions = plan_scene_boundaries(60_000, 60, [], speech)
+    points = [0, *(item.time_ms for item in decisions), 60_000]
+
+    assert len(decisions) == 59
+    assert min(end - start for start, end in zip(points, points[1:])) >= 700
+    assert all(
+        not any(start_ms < item.time_ms < end_ms for _text, start_ms, end_ms in words)
+        for item in decisions
+    )
+
+
+def test_large_transcript_is_pruned_before_global_scoring() -> None:
+    scene_count = 500
+    duration_ms = 5_000_000
+    speech = transcript([
+        (f"слово-{index}", index * 500 + 20, index * 500 + 320)
+        for index in range(10_000)
+    ])
+    candidate_spacing_ms = min(700, duration_ms // (scene_count * 3))
+    candidates = build_boundary_candidates(
+        duration_ms,
+        scene_count,
+        [],
+        speech,
+        minimum_gap_ms=candidate_spacing_ms,
+    )
+    feasible = _maximum_feasible_minimum(
+        candidates,
+        duration_ms,
+        scene_count,
+        candidate_spacing_ms,
+        700,
+    )
+
+    assert feasible is not None
+    _minimum_gap_ms, mandatory_path = feasible
+    progress = _speech_progress_by_candidate(candidates, speech)
+    planning_candidates, _planning_progress = _prune_planning_candidates(
+        candidates,
+        progress,
+        duration_ms,
+        scene_count,
+        mandatory_path,
+    )
+
+    assert len(candidates) > 10_000
+    assert len(planning_candidates) <= scene_count * 12
+    assert len(plan_scene_boundaries(duration_ms, scene_count, [], speech)) == 499

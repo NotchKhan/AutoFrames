@@ -4,7 +4,9 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "prebuild": "node scripts/validate-api-url.mjs",
     "build": "next build",
+    "build:vercel": "node scripts/validate-api-url.mjs --require-api-url --require-https && next build",
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",

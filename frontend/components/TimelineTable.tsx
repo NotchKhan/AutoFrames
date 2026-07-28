@@ -3,7 +3,7 @@
 import Image from "next/image";
 
 import { imageUrl } from "@/lib/api";
-import type { TimelineResponse } from "@/lib/types";
+import type { SyncStrategy, TimelineResponse } from "@/lib/types";
 
 
 interface TimelineTableProps {
@@ -11,6 +11,7 @@ interface TimelineTableProps {
   timeline: TimelineResponse;
   disabled: boolean;
   onDelete: (imageId: string) => void;
+  onStrategyChange: (strategy: SyncStrategy) => void;
 }
 
 
@@ -28,7 +29,13 @@ function audioTrackLabel(count: number): string {
 }
 
 
-export function TimelineTable({ projectId, timeline, disabled, onDelete }: TimelineTableProps) {
+export function TimelineTable({
+  projectId,
+  timeline,
+  disabled,
+  onDelete,
+  onStrategyChange,
+}: TimelineTableProps) {
   const automatic = timeline.timeline_mode === "audio_pauses";
   const methodLabel = {
     manual: "Ручные метки",
@@ -39,13 +46,16 @@ export function TimelineTable({ projectId, timeline, disabled, onDelete }: Timel
     unavailable: "Недостаточно границ",
   }[timeline.analysis_method];
 
-  function boundaryLabel(kind: string, hasWarnings: boolean): string {
+  function boundaryLabel(kind: string): string {
     if (kind === "sentence_pause" || kind === "sentence_end") return "Предложение";
     if (kind === "segment_pause" || kind === "segment_end") return "Фраза";
     if (kind === "long_pause" || kind === "short_pause") return "Пауза";
     if (kind === "word_boundary") return "После слова";
     if (kind === "audio_end") return "Конец аудио";
-    return hasWarnings ? "Равномерно" : "Готов";
+    if (kind === "fallback") {
+      return timeline.transcription_used ? "Безопасный резерв" : "Равномерно";
+    }
+    return "Готов";
   }
   return (
     <section className="panel timeline-panel" aria-labelledby="timeline-title">
@@ -60,6 +70,29 @@ export function TimelineTable({ projectId, timeline, disabled, onDelete }: Timel
             : `${timeline.issues.length} ошибок`}
         </span>
       </div>
+
+      {automatic && (
+        <div className="sync-strategy-control">
+          <label htmlFor="sync-strategy">
+            <strong>Логика смены кадров</strong>
+            <span>{({
+              adaptive: "Учитывает число фотографий, смысловые окончания, темп речи и длину сцен.",
+              semantic: "Максимальный приоритет предложениям, фразам и естественным паузам.",
+              even: "Стремится к ровному темпу, но при распознанной речи не ставит смену внутри слова.",
+            } as const)[timeline.sync_strategy]}</span>
+          </label>
+          <select
+            id="sync-strategy"
+            value={timeline.sync_strategy}
+            disabled={disabled}
+            onChange={(event) => onStrategyChange(event.target.value as SyncStrategy)}
+          >
+            <option value="adaptive">Адаптивно · рекомендуется</option>
+            <option value="semantic">По смыслу и паузам</option>
+            <option value="even">Ровный темп</option>
+          </select>
+        </div>
+      )}
 
       <div className="metric-grid">
         <div className="metric-card">
@@ -160,7 +193,7 @@ export function TimelineTable({ projectId, timeline, disabled, onDelete }: Timel
                       className={`row-status ${item.is_valid ? "valid" : "invalid"}`}
                       title={item.warnings.join(" ") || undefined}
                     >
-                      {item.is_valid ? boundaryLabel(item.boundary_kind, item.warnings.length > 0) : "Ошибка"}
+                      {item.is_valid ? boundaryLabel(item.boundary_kind) : "Ошибка"}
                     </span>
                   </td>
                   <td>

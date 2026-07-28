@@ -66,6 +66,7 @@ from services.media_probe import (
     probe_audio_duration_ms,
 )
 from services.settings_validator import validate_render_settings
+from services.scene_sync import SyncStrategy
 from services.speech_recognizer import (
     SpeechRecognitionError,
     SpeechTranscript,
@@ -103,6 +104,7 @@ class ProjectRecord:
     speech_transcript: SpeechTranscript | None = None
     audio_analysis_complete: bool = False
     audio_analysis_warning: str | None = None
+    sync_strategy: SyncStrategy = "adaptive"
     timeline: list[TimelineItem] = field(default_factory=list)
     issues: list[ValidationIssue] = field(default_factory=list)
     render_thread: threading.Thread | None = None
@@ -117,6 +119,7 @@ class ProjectRecord:
     error: str | None = None
     result_path: Path | None = None
     media_info: dict[str, Any] = field(default_factory=dict)
+    last_render_request_id: str | None = None
     mutation_in_progress: bool = False
     lock: threading.RLock = field(default_factory=threading.RLock)
 
@@ -244,6 +247,8 @@ class ProjectService:
         record.result_path = None
         record.media_info = {}
         record.error = None
+        record.last_render_request_id = None
+        record.render_thread = None
         record.status = "draft"
         record.progress_percent = 0.0
         record.completed_operations = 0
@@ -259,6 +264,7 @@ class ProjectService:
                 record.audio_pauses or [],
                 record.speech_transcript,
                 preferred_minimum_scene_ms=AUDIO_MINIMUM_SCENE_MS,
+                strategy=record.sync_strategy,
             )
         else:
             items, build_issues = [], []
@@ -715,6 +721,34 @@ class ProjectService:
             with record.lock:
                 record.mutation_in_progress = False
 
+    def set_sync_strategy(
+        self,
+        project_id: str,
+        strategy: SyncStrategy,
+    ) -> TimelineResponse:
+        record = self._get(project_id)
+        with record.lock:
+            self._ensure_editable(record)
+            try:
+                mode = timeline_mode_for_filenames(record.images)
+            except (MixedTimelineModeError, TimestampParseError) as exc:
+                raise ApiError(422, "timeline_mode_invalid", str(exc)) from exc
+            if mode == "timestamps":
+                raise ApiError(
+                    422,
+                    "manual_timeline_strategy",
+                    "Способ автосинхронизации нельзя менять для кадров с ручными временными метками.",
+                )
+            if not record.images:
+                raise ApiError(422, "images_missing", "Добавьте хотя бы одно изображение.")
+            if record.audio_path is None or record.audio_duration_ms is None:
+                raise ApiError(422, "audio_missing", "Добавьте корректную озвучку.")
+            if record.sync_strategy != strategy:
+                self._discard_result(record)
+                record.sync_strategy = strategy
+                self._rebuild_timeline(record)
+        return self.timeline_response(project_id)
+
     def delete_image(self, project_id: str, image_id: str) -> UploadResponse:
         record = self._get(project_id)
         with record.lock:
@@ -821,6 +855,7 @@ class ProjectService:
             return TimelineResponse(
                 project_id=project_id,
                 timeline_mode=timeline_mode,
+                sync_strategy=record.sync_strategy,
                 detected_pauses=(len(record.audio_pauses or []) if timeline_mode == "audio_pauses" else 0),
                 detected_sentences=(
                     record.speech_transcript.estimated_sentence_count
@@ -857,9 +892,15 @@ class ProjectService:
             preview_end_ms=payload.preview_end_ms,
         )
 
-    def start_render(self, project_id: str, payload: RenderRequest) -> None:
+    def start_render(self, project_id: str, payload: RenderRequest) -> str:
         record = self._get(project_id)
         with record.lock:
+            if (
+                payload.request_id is not None
+                and payload.request_id == record.last_render_request_id
+                and record.status in {*_ACTIVE_STATUSES, "cancelled", "completed", "failed"}
+            ):
+                return record.status
             if record.mutation_in_progress:
                 raise ApiError(409, "project_busy", "Дождитесь завершения загрузки файлов.")
             if record.status in _ACTIVE_STATUSES:
@@ -868,6 +909,28 @@ class ProjectService:
                 raise ApiError(422, "images_missing", "Добавьте хотя бы одно изображение.")
             if record.audio_path is None or record.audio_duration_ms is None:
                 raise ApiError(422, "audio_missing", "Добавьте корректный аудиофайл.")
+            try:
+                audio_available = record.audio_path.is_file() and record.audio_path.stat().st_size > 0
+                missing_images = [
+                    item.original_filename
+                    for item in record.timeline
+                    if not item.stored_path.is_file() or item.stored_path.stat().st_size <= 0
+                ]
+            except OSError as exc:
+                raise filesystem_error(exc) from exc
+            if not audio_available:
+                raise ApiError(
+                    422,
+                    "audio_source_missing",
+                    "Исходное аудио проекта недоступно. Загрузите аудиодорожки заново.",
+                )
+            if missing_images:
+                raise ApiError(
+                    422,
+                    "image_source_missing",
+                    "Часть исходных изображений недоступна. Загрузите кадры заново.",
+                    {"filenames": missing_images[:10]},
+                )
             if record.issues:
                 raise ApiError(422, "timeline_invalid", "Таймлайн содержит критические ошибки.", {"issues": [issue.message for issue in record.issues]})
             if self.ffmpeg_path is None or self.ffprobe_path is None:
@@ -881,9 +944,12 @@ class ProjectService:
                 raise ApiError(422, "invalid_render_settings", setting_issues[0].message)
             self._discard_result(record)
             record.cancel_event = threading.Event()
+            record.last_render_request_id = payload.request_id
             record.status = "queued"
             record.stage = "Очередь"
             record.message = "Задача принята и ожидает запуска."
+            record.current = 0
+            record.total = 0
             record.logs.clear()
             record.logs.append(record.message)
             record.render_thread = threading.Thread(
@@ -892,7 +958,19 @@ class ProjectService:
                 name=f"render-{record.project_id[:8]}",
                 daemon=True,
             )
-            record.render_thread.start()
+            try:
+                record.render_thread.start()
+            except Exception as exc:
+                LOGGER.exception("Не удалось запустить поток рендера проекта %s", record.project_id)
+                record.render_thread = None
+                record.last_render_request_id = None
+                record.status = "ready"
+                record.stage = "Не удалось запустить рендеринг"
+                record.message = "Сервер не смог запустить обработку. Попробуйте ещё раз."
+                record.error = record.message
+                record.logs.append(record.message)
+                raise ApiError(503, "render_worker_unavailable", record.message) from exc
+            return record.status
 
     @staticmethod
     def _stage_percent(stage: str, current: int, total: int) -> float:
@@ -910,17 +988,29 @@ class ProjectService:
         return round(start + (end - start) * fraction, 1)
 
     def _render_worker(self, record: ProjectRecord, settings: RenderSettings) -> None:
-        with self._render_slots:
-            if record.cancel_event.is_set():
-                with record.lock:
+        try:
+            with self._render_slots:
+                if record.cancel_event.is_set():
+                    with record.lock:
+                        record.touched_at = datetime.now(UTC)
+                        record.status = "cancelled"
+                        record.stage = "Отменено"
+                        record.message = "Рендеринг отменён до запуска."
+                        record.error = "Операция отменена пользователем."
+                        record.logs.append(record.message)
+                    return
+                self._render_in_slot(record, settings)
+        except Exception:
+            LOGGER.exception("Рабочий поток рендера проекта %s аварийно завершился", record.project_id)
+            with record.lock:
+                if record.status in _ACTIVE_STATUSES:
                     record.touched_at = datetime.now(UTC)
-                    record.status = "cancelled"
-                    record.stage = "Отменено"
-                    record.message = "Рендеринг отменён до запуска."
-                    record.error = "Операция отменена пользователем."
+                    record.status = "failed"
+                    record.stage = "Ошибка"
+                    record.message = "Рабочий процесс рендеринга аварийно завершился."
+                    record.error = "Повторите сборку. Если ошибка сохранится, уменьшите разрешение или число кадров."
                     record.logs.append(record.message)
-                return
-            self._render_in_slot(record, settings)
+                    record.logs.append(f"Причина: {record.error}")
 
     def _render_in_slot(self, record: ProjectRecord, settings: RenderSettings) -> None:
         with record.lock:
@@ -955,7 +1045,14 @@ class ProjectService:
         with record.lock:
             record.touched_at = datetime.now(UTC)
             record.media_info = dict(result.media_info)
+            valid_output = False
             if result.success and result.output_path is not None:
+                try:
+                    record.workspace.require_owned_path(result.output_path, record.workspace.output_dir)
+                    valid_output = result.output_path.is_file() and result.output_path.stat().st_size > 0
+                except (OSError, ValueError):
+                    LOGGER.exception("Рендер проекта %s вернул недоступный файл", record.project_id)
+            if result.success and valid_output and result.output_path is not None:
                 record.status = "completed"
                 record.progress_percent = 100.0
                 record.stage = "Готово"
@@ -971,8 +1068,17 @@ class ProjectService:
                 record.status = "failed"
                 record.stage = "Ошибка"
                 record.message = "Рендеринг завершился с ошибкой."
-                record.error = result.error or "Неизвестная ошибка рендеринга."
+                record.error = (
+                    result.error
+                    or (
+                        "Рендеринг не создал доступный MP4-файл. Повторите сборку."
+                        if result.success
+                        else "Неизвестная ошибка рендеринга."
+                    )
+                )
             record.logs.append(record.message)
+            if record.error:
+                record.logs.append(f"Причина: {record.error}")
             for warning in result.warnings:
                 record.logs.append(f"Предупреждение: {warning}")
 
@@ -993,6 +1099,29 @@ class ProjectService:
     def status_response(self, project_id: str) -> StatusResponse:
         record = self._get(project_id)
         with record.lock:
+            if (
+                record.status in _ACTIVE_STATUSES
+                and (record.render_thread is None or not record.render_thread.is_alive())
+            ):
+                record.status = "failed"
+                record.stage = "Ошибка"
+                record.message = "Рабочий процесс рендеринга неожиданно остановился."
+                record.error = "Повторите сборку видео."
+                record.logs.append(record.message)
+                record.logs.append(f"Причина: {record.error}")
+            result_ready = False
+            if record.status == "completed" and record.result_path is not None:
+                try:
+                    result_ready = record.result_path.is_file() and record.result_path.stat().st_size > 0
+                except OSError:
+                    result_ready = False
+            if record.status == "completed" and not result_ready:
+                record.status = "failed"
+                record.stage = "Ошибка"
+                record.message = "Готовый MP4-файл оказался недоступен."
+                record.error = "Запустите сборку ещё раз."
+                record.logs.append(record.message)
+                record.logs.append(f"Причина: {record.error}")
             return StatusResponse(
                 project_id=project_id,
                 status=record.status,
@@ -1004,7 +1133,7 @@ class ProjectService:
                 message=record.message,
                 recent_logs=list(record.logs),
                 error=record.error,
-                result_ready=record.status == "completed" and bool(record.result_path and record.result_path.is_file()),
+                result_ready=result_ready,
                 media_info=dict(record.media_info),
             )
 

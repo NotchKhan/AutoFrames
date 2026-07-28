@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 from PIL import Image, ImageColor, ImageFilter, ImageOps, UnidentifiedImageError
 
@@ -53,7 +54,35 @@ def validate_image(path: Path, original_filename: str) -> tuple[int, int]:
         ) from exc
 
 
-def prepare_image(source: Path, destination: Path, settings: VideoSettings) -> None:
+MotionAxis = Literal["horizontal", "vertical"]
+
+
+def _smart_cover_size(
+    source_size: tuple[int, int],
+    target_size: tuple[int, int],
+    motion_axis: MotionAxis,
+) -> tuple[int, int]:
+    """Keep up to two viewports of source detail for a real pan without excessive memory use."""
+    source_width, source_height = source_size
+    target_width, target_height = target_size
+    target_pixels = target_width * target_height
+    max_prepared_pixels = min(MAX_IMAGE_PIXELS, target_pixels * 2)
+    if motion_axis == "horizontal":
+        natural_width = (target_height * source_width + source_height - 1) // source_height
+        max_width = max(target_width, max_prepared_pixels // target_height)
+        return max(target_width, min(natural_width, max_width)), target_height
+    natural_height = (target_width * source_height + source_width - 1) // source_width
+    max_height = max(target_height, max_prepared_pixels // target_width)
+    return target_width, max(target_height, min(natural_height, max_height))
+
+
+def prepare_image(
+    source: Path,
+    destination: Path,
+    settings: VideoSettings,
+    *,
+    motion_axis: MotionAxis | None = None,
+) -> tuple[int, int]:
     destination.parent.mkdir(parents=True, exist_ok=True)
     size = (settings.width, settings.height)
     try:
@@ -61,7 +90,13 @@ def prepare_image(source: Path, destination: Path, settings: VideoSettings) -> N
             _validate_metadata(opened, source, source.name)
             image = ImageOps.exif_transpose(opened).convert("RGB")
             if settings.scale_mode == "cover":
-                canvas = ImageOps.fit(image, size, method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
+                cover_size = _smart_cover_size(image.size, size, motion_axis) if motion_axis else size
+                canvas = ImageOps.fit(
+                    image,
+                    cover_size,
+                    method=Image.Resampling.LANCZOS,
+                    centering=(0.5, 0.5),
+                )
             elif settings.scale_mode == "fit_blur":
                 background = ImageOps.fit(
                     image, size, method=Image.Resampling.LANCZOS, centering=(0.5, 0.5)
@@ -82,6 +117,7 @@ def prepare_image(source: Path, destination: Path, settings: VideoSettings) -> N
                 position = ((size[0] - foreground.width) // 2, (size[1] - foreground.height) // 2)
                 canvas.paste(foreground, position)
             canvas.save(destination, format="PNG", optimize=False)
+            return canvas.size
     except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as exc:
         raise ImageValidationError(f"Не удалось подготовить изображение «{source.name}»: {exc}") from exc
 

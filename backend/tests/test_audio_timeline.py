@@ -102,6 +102,11 @@ def test_audio_timeline_falls_back_to_even_boundaries_without_pauses() -> None:
 
     assert not issues
     assert [item.end_ms for item in items] == [3_000, 6_000, 9_000]
+    assert [item.parsed_timestamp for item in items] == [
+        "равномерно",
+        "равномерно",
+        "конец аудио",
+    ]
     assert items[0].warnings and items[1].warnings
     assert not items[2].warnings
 
@@ -137,3 +142,76 @@ def test_highly_uneven_semantic_scene_is_flagged_without_moving_safe_boundaries(
 
     assert not issues
     assert "значительно длиннее" in " ".join(items[1].warnings)
+
+
+def test_audio_timeline_exposes_selectable_sync_strategy() -> None:
+    speech = SpeechTranscript(
+        "ru",
+        (
+            SpeechWord("Раз.", 200, 1_800),
+            SpeechWord("два", 2_000, 3_800),
+            SpeechWord("три", 4_000, 4_900),
+            SpeechWord("четыре", 5_100, 6_800),
+            SpeechWord("Пять.", 7_000, 8_200),
+            SpeechWord("финал", 8_400, 9_500),
+        ),
+        (),
+    )
+
+    semantic, semantic_issues = build_audio_timeline(
+        [source("01.jpg"), source("02.jpg")],
+        10_000,
+        [],
+        speech,
+        strategy="semantic",
+    )
+    even, even_issues = build_audio_timeline(
+        [source("01.jpg"), source("02.jpg")],
+        10_000,
+        [],
+        speech,
+        strategy="even",
+    )
+
+    assert not semantic_issues and not even_issues
+    assert semantic[0].boundary_kind == "sentence_end"
+    assert even[0].boundary_kind == "word_boundary"
+    assert semantic[0].end_ms < even[0].end_ms
+
+
+def test_audio_timeline_rejects_more_images_than_physical_frames() -> None:
+    items, issues = build_audio_timeline(
+        [source(f"{index:03}.jpg") for index in range(61)],
+        1_000,
+        [],
+    )
+
+    assert items == []
+    assert len(issues) == 1
+    assert "61 изображений" in issues[0].message
+    assert "60 FPS" in issues[0].message
+    assert "60 физических кадров" in issues[0].message
+
+
+def test_safe_fallback_has_an_honest_boundary_label() -> None:
+    speech = SpeechTranscript(
+        "ru",
+        (
+            SpeechWord("Первая.", 500, 1_500),
+            SpeechWord("Вторая.", 6_000, 7_000),
+            SpeechWord("Финал", 10_000, 11_000),
+        ),
+        (),
+    )
+    items, issues = build_audio_timeline(
+        [source(f"{index:02}.jpg") for index in range(1, 8)],
+        12_000,
+        [],
+        speech,
+    )
+
+    fallback_items = [item for item in items if item.boundary_kind == "fallback"]
+    assert not issues
+    assert fallback_items
+    assert all(item.parsed_timestamp == "безопасная резервная точка" for item in fallback_items)
+    assert all("равномерно" not in item.parsed_timestamp for item in fallback_items)

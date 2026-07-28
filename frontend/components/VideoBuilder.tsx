@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   ApiClientError,
@@ -10,7 +10,9 @@ import {
   deleteProject,
   getStatus,
   getTimeline,
+  isTransientApiError,
   resultUrl,
+  setSyncStrategy,
   startRender,
   uploadAudio,
   uploadImages,
@@ -20,6 +22,7 @@ import {
   DEFAULT_RENDER_SETTINGS,
   type RenderPayload,
   type StatusResponse,
+  type SyncStrategy,
   type TimelineResponse,
 } from "@/lib/types";
 import { FileUpload } from "@/components/FileUpload";
@@ -53,6 +56,20 @@ function messageFromError(error: unknown): string {
 }
 
 
+function createRenderRequestId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+
+function displayFps(value: unknown, fallback: number): string {
+  const fps = typeof value === "number" && Number.isFinite(value) ? value : fallback;
+  return fps.toFixed(2).replace(/\.?0+$/, "");
+}
+
+
 export function VideoBuilder() {
   const [images, setImages] = useState<File[]>([]);
   const [audio, setAudio] = useState<File[]>([]);
@@ -64,10 +81,15 @@ export function VideoBuilder() {
   const [busyMessage, setBusyMessage] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [deletingImageId, setDeletingImageId] = useState<string | null>(null);
+  const [renderStarting, setRenderStarting] = useState(false);
+  const [syncingStrategy, setSyncingStrategy] = useState(false);
+  const [strategyStateUncertain, setStrategyStateUncertain] = useState(false);
+  const renderStartInFlight = useRef(false);
+  const syncStrategyInFlight = useRef(false);
 
   const renderActive = status !== null && ["queued", "rendering", "cancelling"].includes(status.status);
-  const busy = phase === "uploading" || renderActive;
-  const currentStep = phase === "result" || renderActive ? 3 : timeline ? 2 : 0;
+  const busy = phase === "uploading" || renderStarting || syncingStrategy || renderActive;
+  const currentStep = phase === "result" || phase === "rendering" || renderActive ? 3 : timeline ? 2 : 0;
 
   const totalUploadSize = useMemo(
     () => images.reduce((sum, file) => sum + file.size, 0)
@@ -79,31 +101,96 @@ export function VideoBuilder() {
     if (!projectId || !renderActive) return;
     const activeProjectId = projectId;
     let stopped = false;
+    let timer: number | null = null;
+    let consecutiveFailures = 0;
+
+    function schedule(delayMs: number) {
+      if (!stopped) timer = window.setTimeout(() => void poll(), delayMs);
+    }
 
     async function poll() {
+      let continuePolling = true;
       try {
         const next = await getStatus(activeProjectId);
         if (stopped) return;
-        setStatus(next);
+        const hadConnectionFailures = consecutiveFailures > 0;
+        consecutiveFailures = 0;
         if (next.status === "completed") {
-          setPhase("result");
-        } else if (next.status === "failed" || next.status === "cancelled") {
-          setPhase(next.status === "failed" ? "error" : "review");
-          if (next.error) setError(next.error);
+          continuePolling = false;
+          if (next.result_ready) {
+            setStatus(next);
+            setError(null);
+            setPhase("result");
+          } else {
+            const missingResult = "Сервер завершил обработку, но готовый MP4 недоступен. Запустите сборку ещё раз.";
+            setStatus({
+              ...next,
+              status: "failed",
+              stage: "Ошибка результата",
+              message: missingResult,
+              error: missingResult,
+            });
+            setError(missingResult);
+            setPhase("error");
+          }
+        } else if (next.status === "failed") {
+          continuePolling = false;
+          setStatus(next);
+          setError(next.error ?? next.message);
+          setPhase("error");
+        } else if (next.status === "cancelled") {
+          continuePolling = false;
+          setStatus(next);
+          setError(null);
+          setPhase("review");
+        } else if (["queued", "rendering", "cancelling"].includes(next.status)) {
+          setStatus(next);
+          setPhase("rendering");
+          if (hadConnectionFailures) setError(null);
+        } else {
+          continuePolling = false;
+          setStatus(next);
+          setError("Сервер доступен, но запуск сборки не подтверждён. Нажмите «Собрать видео» ещё раз.");
+          setPhase("review");
         }
       } catch (pollError) {
-        if (!stopped) {
-          setError(messageFromError(pollError));
+        if (stopped) return;
+        consecutiveFailures += 1;
+        if (!isTransientApiError(pollError)) {
+          continuePolling = false;
+          const failureMessage = messageFromError(pollError);
+          setStatus((current) => current ? {
+            ...current,
+            status: "failed",
+            stage: "Связь с проектом потеряна",
+            message: failureMessage,
+            error: failureMessage,
+          } : current);
+          setError(failureMessage);
           setPhase("error");
+        } else {
+          setStatus((current) => current ? {
+            ...current,
+            message: `Связь с сервером прервалась. Повторяем проверку (попытка ${consecutiveFailures})…`,
+          } : current);
+          if (consecutiveFailures >= 2) {
+            setError("Связь с сервером нестабильна, но сборка могла продолжиться. Статус проверяется автоматически.");
+          }
+        }
+      } finally {
+        if (!stopped && continuePolling) {
+          const delay = consecutiveFailures > 0
+            ? Math.min(1_000 * (2 ** (consecutiveFailures - 1)), 8_000)
+            : 1_000;
+          schedule(delay);
         }
       }
     }
 
     void poll();
-    const timer = window.setInterval(() => void poll(), 1000);
     return () => {
       stopped = true;
-      window.clearInterval(timer);
+      if (timer !== null) window.clearTimeout(timer);
     };
   }, [projectId, renderActive]);
 
@@ -111,6 +198,7 @@ export function VideoBuilder() {
     if (!images.length || !audio.length) return;
     setPhase("uploading");
     setError(null);
+    setStrategyStateUncertain(false);
     setTimeline(null);
     setStatus(null);
     try {
@@ -172,17 +260,125 @@ export function VideoBuilder() {
     }
   }
 
-  async function renderVideo() {
-    if (!projectId || !timeline?.is_valid) return;
+  async function changeSyncStrategy(strategy: SyncStrategy) {
+    if (
+      !projectId
+      || !timeline
+      || timeline.sync_strategy === strategy
+      || syncStrategyInFlight.current
+    ) return;
+    const activeProjectId = projectId;
+    syncStrategyInFlight.current = true;
+    setSyncingStrategy(true);
+    setStrategyStateUncertain(false);
+    setError(null);
+    // The server discards a completed render before rebuilding the timeline.
+    // Hide the old result before the request so a lost response cannot leave a stale download link.
+    setStatus(null);
+    setPhase("review");
+    try {
+      const rebuilt = await setSyncStrategy(activeProjectId, strategy);
+      setTimeline(rebuilt);
+      setStrategyStateUncertain(false);
+      setPhase("review");
+    } catch (strategyError) {
+      if (isTransientApiError(strategyError)) {
+        try {
+          const reconciled = await getTimeline(activeProjectId);
+          setTimeline(reconciled);
+          setStrategyStateUncertain(false);
+          setPhase("review");
+          setError(reconciled.sync_strategy === strategy ? null : messageFromError(strategyError));
+        } catch (reconciliationError) {
+          setStrategyStateUncertain(true);
+          setError(
+            `Не удалось подтвердить выбранную стратегию: ${messageFromError(reconciliationError)} `
+            + "Повторите синхронизацию по звуку перед сборкой.",
+          );
+        }
+      } else {
+        setStrategyStateUncertain(false);
+        setError(messageFromError(strategyError));
+      }
+    } finally {
+      syncStrategyInFlight.current = false;
+      setSyncingStrategy(false);
+    }
+  }
+
+  function invalidateProjectAfterMediaChange() {
+    const previousId = projectId;
+    if (!previousId && !timeline && !status) return;
+    setProjectId(null);
+    setTimeline(null);
+    setSettings(DEFAULT_RENDER_SETTINGS);
+    setStatus(null);
+    setPhase("empty");
+    setBusyMessage("");
     setError(null);
     setDeletingImageId(null);
+    setRenderStarting(false);
+    setSyncingStrategy(false);
+    setStrategyStateUncertain(false);
+    renderStartInFlight.current = false;
+    syncStrategyInFlight.current = false;
+    if (previousId) {
+      void deleteProject(previousId).catch(() => undefined);
+    }
+  }
+
+  function changeImages(files: File[]) {
+    setImages(files);
+    invalidateProjectAfterMediaChange();
+  }
+
+  function changeAudio(files: File[]) {
+    setAudio(files);
+    invalidateProjectAfterMediaChange();
+  }
+
+  async function renderVideo() {
+    if (
+      !projectId
+      || !timeline?.is_valid
+      || strategyStateUncertain
+      || renderStartInFlight.current
+    ) return;
+    renderStartInFlight.current = true;
+    setRenderStarting(true);
+    setError(null);
+    setStatus(null);
+    setDeletingImageId(null);
+    setPhase("rendering");
+    const requestId = createRenderRequestId();
     try {
-      await startRender(projectId, settings);
-      setStatus({ ...QUEUED_STATUS, project_id: projectId });
+      const accepted = await startRender(projectId, { ...settings, request_id: requestId });
+      setStatus({
+        ...QUEUED_STATUS,
+        project_id: projectId,
+        message: accepted.message,
+        recent_logs: [accepted.message],
+      });
       setPhase("rendering");
     } catch (renderError) {
-      setError(messageFromError(renderError));
-      setPhase("error");
+      if (isTransientApiError(renderError)) {
+        const reconciliationMessage =
+          "Ответ на запуск не получен. Сборка могла начаться — автоматически проверяем её состояние.";
+        setStatus({
+          ...QUEUED_STATUS,
+          project_id: projectId,
+          message: reconciliationMessage,
+          recent_logs: [reconciliationMessage],
+        });
+        setError(reconciliationMessage);
+        setPhase("rendering");
+      } else {
+        setError(messageFromError(renderError));
+        setPhase("error");
+      }
+    } finally {
+      renderStartInFlight.current = false;
+      setRenderStarting(false);
     }
   }
 
@@ -212,6 +408,11 @@ export function VideoBuilder() {
     setPhase("empty");
     setError(null);
     setDeletingImageId(null);
+    setRenderStarting(false);
+    setSyncingStrategy(false);
+    setStrategyStateUncertain(false);
+    renderStartInFlight.current = false;
+    syncStrategyInFlight.current = false;
     if (previousId) {
       await deleteProject(previousId).catch(() => undefined);
     }
@@ -321,8 +522,8 @@ export function VideoBuilder() {
           images={images}
           audio={audio}
           disabled={busy}
-          onImagesChange={setImages}
-          onAudioChange={setAudio}
+          onImagesChange={changeImages}
+          onAudioChange={changeAudio}
           onSubmit={() => void uploadProject()}
         />
 
@@ -338,8 +539,9 @@ export function VideoBuilder() {
           <TimelineTable
             projectId={projectId}
             timeline={timeline}
-            disabled={busy || deletingImageId !== null}
+            disabled={busy || deletingImageId !== null || strategyStateUncertain}
             onDelete={(imageId) => void removeImage(imageId)}
+            onStrategyChange={(strategy) => void changeSyncStrategy(strategy)}
           />
         )}
 
@@ -347,10 +549,18 @@ export function VideoBuilder() {
           <SettingsPanel
             value={settings}
             timeline={timeline}
-            disabled={busy}
+            disabled={busy || strategyStateUncertain}
             onChange={setSettings}
             onRender={() => void renderVideo()}
           />
+        )}
+
+        {renderStarting && !status && (
+          <section className="panel loading-state" aria-live="polite">
+            <span className="large-spinner" aria-hidden="true" />
+            <h2>Отправляем задачу на сборку…</h2>
+            <p>Если сервер запускается после паузы, это может занять до минуты.</p>
+          </section>
         )}
 
         {status && (renderActive || status.status === "cancelled" || status.status === "failed") && (
@@ -365,7 +575,7 @@ export function VideoBuilder() {
             <p>Файл проверен и полностью готов к скачиванию и публикации.</p>
             <div className="result-specs">
               <span>{String(mediaInfo.width ?? settings.video.width)}×{String(mediaInfo.height ?? settings.video.height)}</span>
-              <span>{String(mediaInfo.fps ?? settings.video.fps)} FPS</span>
+              <span>{displayFps(mediaInfo.fps, settings.video.fps)} FPS</span>
               <span>{String(mediaInfo.video_codec ?? "H.264").toUpperCase()}</span>
               <span>{String(mediaInfo.audio_codec ?? "AAC").toUpperCase()}</span>
               {typeof mediaInfo.duration_ms === "number" && <span>{formatMilliseconds(mediaInfo.duration_ms)}</span>}

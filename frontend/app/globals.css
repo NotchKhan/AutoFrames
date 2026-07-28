@@ -435,6 +435,23 @@ summary:focus-visible {
 .status-pill.success { color: #23836b; background: var(--mint-soft); }
 .status-pill.danger { color: var(--danger); background: var(--danger-soft); }
 
+.sync-strategy-control {
+  margin-bottom: 16px;
+  padding: 14px 16px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 0.38fr);
+  align-items: center;
+  gap: 18px;
+  border: 1px solid rgba(98, 87, 232, 0.12);
+  border-radius: 14px;
+  background: #f8f7ff;
+}
+
+.sync-strategy-control label { display: grid; gap: 4px; }
+.sync-strategy-control strong { color: #344054; font-size: 0.8rem; }
+.sync-strategy-control span { color: var(--muted); font-size: 0.74rem; line-height: 1.5; }
+.sync-strategy-control select { width: 100%; }
+
 .upload-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.3fr) minmax(300px, 0.7fr);
@@ -785,6 +802,9 @@ input[type="range"] { width: 100%; accent-color: var(--violet); }
 .progress-meta { margin-top: 12px; display: flex; justify-content: space-between; gap: 20px; color: var(--muted); font-size: 0.78rem; }
 .progress-meta p { margin: 0; color: var(--ink); }
 .log-box { margin-top: 19px; padding: 13px 15px; border-radius: 12px; background: #202639; color: #dfe4f2; font-size: 0.72rem; }
+.render-error-detail { margin-top: 16px; padding: 12px 14px; border: 1px solid #f2b8c0; border-radius: 12px; background: #fff3f5; color: #9e3443; }
+.render-error-detail strong { font-size: 0.8rem; }
+.render-error-detail p { margin: 4px 0 0; font-size: 0.78rem; line-height: 1.5; }
 .log-box summary { cursor: pointer; color: #aeb8d0; font-weight: 700; }
 .log-box ol { max-height: 150px; overflow: auto; margin: 12px 0 0; padding-left: 20px; line-height: 1.65; }
 .danger-button { margin-top: 18px; color: var(--danger); border-color: #efd6da; }
@@ -894,6 +914,7 @@ input[type="range"] { width: 100%; accent-color: var(--violet); }
   .metric-grid,
   .three-columns,
   .two-columns { grid-template-columns: 1fr; }
+  .sync-strategy-control { grid-template-columns: 1fr; gap: 10px; }
   .drop-zone { min-height: 205px; padding-inline: 15px; }
   .drop-copy span { font-size: 0.75rem; }
   .tip-row { align-items: flex-start; }

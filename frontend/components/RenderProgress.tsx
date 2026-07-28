@@ -36,6 +36,12 @@ export function RenderProgress({ status, onCancel }: RenderProgressProps) {
           {` · операций: ${status.completed_operations}`}
         </span>
       </div>
+      {status.error && !active && (
+        <div className="render-error-detail" role="alert">
+          <strong>{status.status === "cancelled" ? "Сборка остановлена" : "Причина ошибки"}</strong>
+          <p>{status.error}</p>
+        </div>
+      )}
       {status.recent_logs.length > 0 && (
         <details className="log-box">
           <summary>Последние действия</summary>

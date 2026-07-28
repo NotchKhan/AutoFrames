@@ -8,12 +8,13 @@ from typing import Literal
 from models.timeline import SourceImage, TimelineItem, ValidationIssue
 from services.audio_analyzer import AudioPause
 from services.filename_parser import TimestampParseError, parse_timestamp
-from services.scene_sync import BoundaryKind, plan_scene_boundaries
+from services.scene_sync import BoundaryKind, SyncStrategy, plan_scene_boundaries
 from services.speech_recognizer import SpeechTranscript
-from utils.time_utils import format_ms
+from utils.time_utils import format_ms, frame_index
 
 
 _NATURAL_PART_RE = re.compile(r"(\d+)")
+_MAX_SUPPORTED_FPS = 60
 
 
 class MixedTimelineModeError(ValueError):
@@ -64,7 +65,7 @@ _BOUNDARY_LABELS: dict[BoundaryKind, str] = {
     "long_pause": "длинная пауза",
     "short_pause": "пауза",
     "word_boundary": "после слова",
-    "fallback": "равномерно",
+    "fallback": "безопасная резервная точка",
 }
 
 
@@ -75,14 +76,18 @@ def build_audio_timeline(
     transcript: SpeechTranscript | None = None,
     *,
     preferred_minimum_scene_ms: int = 700,
+    strategy: SyncStrategy = "adaptive",
 ) -> tuple[list[TimelineItem], list[ValidationIssue]]:
     if not sources:
         return [], [ValidationIssue("Не добавлено ни одного изображения.")]
     if audio_duration_ms <= 0:
         return [], [ValidationIssue("Длительность аудио должна быть больше нуля.")]
-    if audio_duration_ms < len(sources):
+    available_frames = frame_index(audio_duration_ms, _MAX_SUPPORTED_FPS)
+    if available_frames < len(sources):
         return [], [ValidationIssue(
-            "Аудиодорожка слишком короткая для выбранного количества изображений."
+            f"Для {len(sources)} изображений аудиодорожка слишком короткая: даже при "
+            f"{_MAX_SUPPORTED_FPS} FPS в ней только {available_frames} физических кадров. "
+            "Уменьшите число изображений или используйте более длинную озвучку."
         )]
 
     ordered = sorted(
@@ -100,6 +105,7 @@ def build_audio_timeline(
             pauses,
             transcript,
             preferred_minimum_scene_ms=preferred_minimum_scene_ms,
+            strategy=strategy,
         )
     except ValueError as exc:
         return [], [ValidationIssue(str(exc))]
@@ -118,9 +124,14 @@ def build_audio_timeline(
     ):
         warnings: list[str] = []
         if boundary_kind == "fallback":
-            warnings.append(
-                "Не найдено безопасной речевой границы; кадр распределён равномерно."
-            )
+            if transcript is not None and transcript.words:
+                warnings.append(
+                    "Не найдено смысловой границы; использована резервная точка вне слов."
+                )
+            else:
+                warnings.append(
+                    "Нет временных меток слов; кадр распределён равномерно."
+                )
         elif boundary_kind == "word_boundary":
             warnings.append("Подходящая пауза не найдена; смена поставлена после ближайшего слова.")
         if end_ms - previous_end < preferred_minimum_scene_ms:
@@ -131,11 +142,14 @@ def build_audio_timeline(
             warnings.append(
                 "Сцена значительно длиннее средней: проверьте соответствие числа кадров тексту."
             )
-        parsed_timestamp = (
-            "конец аудио"
-            if boundary_kind == "audio_end"
-            else _BOUNDARY_LABELS[boundary_kind]
-        )
+        if boundary_kind == "audio_end":
+            parsed_timestamp = "конец аудио"
+        elif boundary_kind == "fallback" and not (
+            transcript is not None and transcript.words
+        ):
+            parsed_timestamp = "равномерно"
+        else:
+            parsed_timestamp = _BOUNDARY_LABELS[boundary_kind]
         items.append(TimelineItem(
             index=index,
             original_filename=source.original_filename,
@@ -148,6 +162,17 @@ def build_audio_timeline(
             boundary_kind=boundary_kind,
         ))
         previous_end = end_ms
+
+    previous_frame = 0
+    for item in items:
+        end_frame = frame_index(item.end_ms, _MAX_SUPPORTED_FPS)
+        if end_frame <= previous_frame:
+            return items, [ValidationIssue(
+                f"Кадр «{item.original_filename}» короче одного физического кадра даже при "
+                f"{_MAX_SUPPORTED_FPS} FPS. Уменьшите число изображений или используйте "
+                "более длинную озвучку."
+            )]
+        previous_frame = end_frame
     return items, []
 
 

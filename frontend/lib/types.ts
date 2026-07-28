@@ -8,6 +8,8 @@ export type ProjectStatus =
   | "completed"
   | "failed";
 
+export type SyncStrategy = "adaptive" | "semantic" | "even";
+
 export interface ProjectResponse {
   project_id: string;
   status: ProjectStatus;
@@ -40,6 +42,7 @@ export interface TimelineRow {
 export interface TimelineResponse {
   project_id: string;
   timeline_mode: "timestamps" | "audio_pauses";
+  sync_strategy: SyncStrategy;
   detected_pauses: number;
   detected_sentences: number;
   transcription_used: boolean;
@@ -71,7 +74,8 @@ export interface VideoSettingsPayload {
     | "right_left"
     | "top_bottom"
     | "bottom_top"
-    | "auto";
+    | "auto"
+    | "smart";
   motion_strength: number;
   motion_speed: number;
   alternate_randomly: boolean;
@@ -100,6 +104,16 @@ export interface RenderPayload {
   keep_debug_files: boolean;
   preview_start_ms: number;
   preview_end_ms: number | null;
+}
+
+export interface RenderStartPayload extends RenderPayload {
+  request_id: string;
+}
+
+export interface RenderAcceptedResponse {
+  project_id: string;
+  status: ProjectStatus;
+  message: string;
 }
 
 export interface StatusResponse {

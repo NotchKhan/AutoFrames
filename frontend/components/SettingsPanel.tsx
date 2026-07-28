@@ -129,6 +129,7 @@ export function SettingsPanel({ value, timeline, disabled, onChange, onRender }:
                 <option value="top_bottom">Сверху вниз</option>
                 <option value="bottom_top">Снизу вверх</option>
                 <option value="auto">Авточередование</option>
+                <option value="smart">Умное движение по формату фото</option>
               </select>
             </label>
             <label>

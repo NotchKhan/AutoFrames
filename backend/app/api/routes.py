@@ -12,6 +12,7 @@ from models.api import (
     RenderAcceptedResponse,
     RenderRequest,
     StatusResponse,
+    SyncStrategyRequest,
     TimelineResponse,
     UploadResponse,
 )
@@ -76,6 +77,16 @@ def validate_project_timeline(project_id: str, request: Request) -> TimelineResp
     return _projects(request).timeline_response(project_id)
 
 
+@router.post("/projects/{project_id}/sync-strategy", response_model=TimelineResponse)
+def change_sync_strategy(
+    project_id: str,
+    payload: SyncStrategyRequest,
+    request: Request,
+) -> TimelineResponse:
+    """Перестроить автоматический таймлайн выбранным способом смены кадров."""
+    return _projects(request).set_sync_strategy(project_id, payload.strategy)
+
+
 @router.post(
     "/projects/{project_id}/render",
     response_model=RenderAcceptedResponse,
@@ -83,11 +94,11 @@ def validate_project_timeline(project_id: str, request: Request) -> TimelineResp
 )
 def start_render(project_id: str, payload: RenderRequest, request: Request) -> RenderAcceptedResponse:
     """Запустить FFmpeg-рендеринг в отдельном серверном потоке."""
-    _projects(request).start_render(project_id, payload)
+    current_status = _projects(request).start_render(project_id, payload)
     return RenderAcceptedResponse(
         project_id=project_id,
-        status="queued",
-        message="Задача рендеринга принята.",
+        status=current_status,
+        message="Запрос рендеринга принят. Состояние можно безопасно уточнять повторно.",
     )
 
 

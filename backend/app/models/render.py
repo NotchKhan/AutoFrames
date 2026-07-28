@@ -8,7 +8,7 @@ from typing import Literal
 ScaleMode = Literal["cover", "fit_blur", "fit_color"]
 MotionMode = Literal[
     "none", "zoom_in", "zoom_out", "left_right", "right_left",
-    "top_bottom", "bottom_top", "auto",
+    "top_bottom", "bottom_top", "auto", "smart",
 ]
 TransitionMode = Literal["none", "fade", "crossfade_safe"]
 EndMode = Literal[
@@ -61,4 +61,3 @@ class RenderResult:
     error: str | None = None
     warnings: list[str] = field(default_factory=list)
     media_info: dict[str, object] = field(default_factory=dict)
-

@@ -163,7 +163,10 @@ def summarize_output(path: Path, ffprobe_path: Path) -> dict[str, object]:
         "pixel_format": video.get("pix_fmt", "неизвестно"),
         # MP4 timescale округляет общую длительность на несколько тиков, поэтому
         # математически одинаковые CFR-потоки могут иметь слегка разные дроби.
-        "is_cfr": real_fps > 0 and abs(average_fps - real_fps) <= 0.001,
+        # A one-tick MP4 duration rounding can move avg_frame_rate slightly
+        # above 0.001 FPS for short concatenated CFR streams. A 0.01 FPS
+        # envelope still rejects common 30/29.97 and 24/23.976 mismatches.
+        "is_cfr": real_fps > 0 and abs(average_fps - real_fps) <= 0.01,
         "has_video": bool(video),
         "has_audio": bool(audio),
         "container": data.get("format", {}).get("format_name", "неизвестно"),

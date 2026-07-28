@@ -15,6 +15,7 @@ ProjectStatus = Literal[
     "completed",
     "failed",
 ]
+SyncStrategyValue = Literal["adaptive", "semantic", "even"]
 
 
 class ProjectResponse(BaseModel):
@@ -57,6 +58,7 @@ class TimelineRowResponse(BaseModel):
 class TimelineResponse(BaseModel):
     project_id: str
     timeline_mode: Literal["timestamps", "audio_pauses"]
+    sync_strategy: SyncStrategyValue = "adaptive"
     detected_pauses: int = 0
     detected_sentences: int = 0
     transcription_used: bool = False
@@ -81,6 +83,10 @@ class TimelineResponse(BaseModel):
     difference_ms: int | None
 
 
+class SyncStrategyRequest(BaseModel):
+    strategy: SyncStrategyValue
+
+
 class VideoSettingsPayload(BaseModel):
     width: int = Field(default=1920, gt=0, le=8192)
     height: int = Field(default=1080, gt=0, le=8192)
@@ -96,6 +102,7 @@ class VideoSettingsPayload(BaseModel):
         "top_bottom",
         "bottom_top",
         "auto",
+        "smart",
     ] = "none"
     motion_strength: float = Field(default=0.06, ge=0, le=0.35)
     motion_speed: float = Field(default=1.0, gt=0, le=5)
@@ -128,6 +135,12 @@ class RenderRequest(BaseModel):
     keep_debug_files: bool = False
     preview_start_ms: int = Field(default=0, ge=0)
     preview_end_ms: int | None = Field(default=None, gt=0)
+    request_id: str | None = Field(
+        default=None,
+        min_length=8,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+    )
 
 
 class RenderAcceptedResponse(BaseModel):

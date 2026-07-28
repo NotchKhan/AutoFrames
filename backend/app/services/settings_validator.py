@@ -10,7 +10,7 @@ _PRESETS = {"veryfast", "medium", "slow"}
 _SCALE_MODES = {"cover", "fit_blur", "fit_color"}
 _MOTION_MODES = {
     "none", "zoom_in", "zoom_out", "left_right", "right_left",
-    "top_bottom", "bottom_top", "auto",
+    "top_bottom", "bottom_top", "auto", "smart",
 }
 _TRANSITION_MODES = {"none", "fade", "crossfade_safe"}
 

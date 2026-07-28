@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import threading
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -235,6 +236,73 @@ def test_images_without_timestamps_are_synced_to_audio_pauses(
     ]
     assert [row["end_ms"] for row in payload["items"]] == [4_880, 9_680, 14_000]
     assert payload["difference_ms"] == 0
+
+
+def test_sync_strategy_can_be_changed_and_rebuilds_automatic_timeline(
+    client: TestClient,
+) -> None:
+    project_id = create_project(client)
+    files = [
+        ("files", (f"{index:02d}.jpg", image_bytes(), "image/jpeg"))
+        for index in range(1, 5)
+    ]
+    assert client.post(f"/api/projects/{project_id}/images", files=files).status_code == 200
+    audio = {"file": ("voice.wav", b"RIFF-valid-test-data", "audio/wav")}
+    assert client.post(f"/api/projects/{project_id}/audio", files=audio).status_code == 200
+
+    for strategy in ("semantic", "even", "adaptive"):
+        response = client.post(
+            f"/api/projects/{project_id}/sync-strategy",
+            json={"strategy": strategy},
+        )
+        assert response.status_code == 200
+        assert response.json()["sync_strategy"] == strategy
+        assert response.json()["is_valid"] is True
+        assert len(response.json()["items"]) == 4
+
+
+def test_sync_strategy_is_rejected_for_manual_timestamp_mode(client: TestClient) -> None:
+    project_id = create_project(client)
+    upload_valid_project(client, project_id)
+
+    response = client.post(
+        f"/api/projects/{project_id}/sync-strategy",
+        json={"strategy": "even"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "manual_timeline_strategy"
+
+
+def test_impossible_photo_count_is_reported_before_render(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        project_service_module,
+        "probe_audio_duration_ms",
+        lambda _path, _probe: 1_000,
+    )
+    project_id = create_project(client)
+    files = [
+        ("files", (f"{index:03}.jpg", image_bytes(), "image/jpeg"))
+        for index in range(61)
+    ]
+    assert client.post(f"/api/projects/{project_id}/images", files=files).status_code == 200
+    audio = {"file": ("voice.wav", b"RIFF-valid-test-data", "audio/wav")}
+
+    upload = client.post(f"/api/projects/{project_id}/audio", files=audio)
+    timeline = client.get(f"/api/projects/{project_id}/timeline").json()
+    render = client.post(f"/api/projects/{project_id}/render", json={})
+
+    assert upload.status_code == 200
+    assert upload.json()["status"] == "draft"
+    assert timeline["is_valid"] is False
+    assert timeline["items"] == []
+    assert "61 изображений" in timeline["issues"][0]["message"]
+    assert "60 физических кадров" in timeline["issues"][0]["message"]
+    assert render.status_code == 422
+    assert render.json()["error"]["code"] == "timeline_invalid"
 
 
 def test_high_quality_mode_uses_sentence_timestamps_and_caches_audio_analysis(
@@ -629,6 +697,132 @@ def test_fake_render_status_and_download(
     download = client.get(f"/api/projects/{project_id}/result")
     assert download.status_code == 200
     assert download.content == b"fake-mp4"
+    record = service._records[project_id]
+    assert record.result_path is not None
+    record.result_path.unlink()
+    missing_result = client.get(f"/api/projects/{project_id}/status").json()
+    assert missing_result["status"] == "failed"
+    assert missing_result["result_ready"] is False
+    assert "MP4" in missing_result["message"]
+
+
+def test_render_start_is_idempotent_for_retried_request(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_id = create_project(client)
+    upload_valid_project(client, project_id)
+    started = threading.Event()
+    release = threading.Event()
+    render_calls: list[int] = []
+
+    class WaitingSuccessfulRenderer:
+        def __init__(self, _ffmpeg: Path, _ffprobe: Path, workspace: workspace_module.WorkspaceManager) -> None:
+            self.workspace = workspace
+
+        def render(self, *_args: object, **_kwargs: object) -> RenderResult:
+            render_calls.append(1)
+            started.set()
+            assert release.wait(timeout=2)
+            output = self.workspace.output_path("final_video.mp4")
+            output.write_bytes(b"idempotent-render")
+            return RenderResult(True, output, media_info={"duration_ms": 14_000})
+
+    monkeypatch.setattr(project_service_module, "VideoRenderer", WaitingSuccessfulRenderer)
+    payload = {"request_id": "render-request-0001"}
+    first = client.post(f"/api/projects/{project_id}/render", json=payload)
+    assert first.status_code == 202
+    assert started.wait(timeout=1)
+    second = client.post(f"/api/projects/{project_id}/render", json=payload)
+    assert second.status_code == 202
+    assert second.json()["status"] in {"queued", "rendering"}
+    assert len(render_calls) == 1
+
+    release.set()
+    for _ in range(100):
+        status_payload = client.get(f"/api/projects/{project_id}/status").json()
+        if status_payload["status"] == "completed":
+            break
+        time.sleep(0.01)
+    assert status_payload["status"] == "completed"
+
+    completed_retry = client.post(f"/api/projects/{project_id}/render", json=payload)
+    assert completed_retry.status_code == 202
+    assert completed_retry.json()["status"] == "completed"
+    assert len(render_calls) == 1
+
+
+def test_success_without_output_file_is_reported_as_failed(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_id = create_project(client)
+    upload_valid_project(client, project_id)
+
+    class MissingOutputRenderer:
+        def __init__(self, _ffmpeg: Path, _ffprobe: Path, workspace: workspace_module.WorkspaceManager) -> None:
+            self.workspace = workspace
+
+        def render(self, *_args: object, **_kwargs: object) -> RenderResult:
+            return RenderResult(True, self.workspace.output_path("final_video.mp4"))
+
+    monkeypatch.setattr(project_service_module, "VideoRenderer", MissingOutputRenderer)
+    assert client.post(
+        f"/api/projects/{project_id}/render",
+        json={"request_id": "missing-output-0001"},
+    ).status_code == 202
+    for _ in range(100):
+        payload = client.get(f"/api/projects/{project_id}/status").json()
+        if payload["status"] == "failed":
+            break
+        time.sleep(0.01)
+    assert payload["status"] == "failed"
+    assert payload["result_ready"] is False
+    assert "MP4" in payload["error"]
+    assert any(entry.startswith("Причина:") for entry in payload["recent_logs"])
+
+
+def test_render_worker_crash_becomes_terminal_failure(
+    client: TestClient,
+    service: ProjectService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_id = create_project(client)
+    upload_valid_project(client, project_id)
+
+    def crash_worker_body(_record: object, _settings: object) -> None:
+        raise RuntimeError("simulated worker crash")
+
+    monkeypatch.setattr(service, "_render_in_slot", crash_worker_body)
+    assert client.post(
+        f"/api/projects/{project_id}/render",
+        json={"request_id": "worker-crash-0001"},
+    ).status_code == 202
+    for _ in range(100):
+        payload = client.get(f"/api/projects/{project_id}/status").json()
+        if payload["status"] == "failed":
+            break
+        time.sleep(0.01)
+    assert payload["status"] == "failed"
+    assert "аварийно" in payload["message"].lower()
+    assert payload["error"]
+    assert payload["result_ready"] is False
+
+
+def test_render_preflight_detects_missing_audio_source(
+    client: TestClient,
+    service: ProjectService,
+) -> None:
+    project_id = create_project(client)
+    upload_valid_project(client, project_id)
+    record = service._records[project_id]
+    assert record.audio_path is not None
+    record.audio_path.unlink()
+
+    response = client.post(f"/api/projects/{project_id}/render", json={})
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "audio_source_missing"
+    assert "аудио" in response.json()["error"]["message"].lower()
 
 
 def test_cancel_render(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
