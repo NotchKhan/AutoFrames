@@ -15,8 +15,8 @@ import {
   setSyncStrategy,
   startRender,
   uploadAudio,
-  uploadImages,
 } from "@/lib/api";
+import { prepareImagesForUpload, uploadImagesInBatches } from "@/lib/imageUpload";
 import { formatMilliseconds, humanFileSize } from "@/lib/time";
 import {
   DEFAULT_RENDER_SETTINGS,
@@ -32,6 +32,9 @@ import { TimelineTable } from "@/components/TimelineTable";
 
 
 type UiPhase = "empty" | "uploading" | "review" | "rendering" | "result" | "error";
+
+const MIB = 1024 * 1024;
+const PROJECT_UPLOAD_SOFT_LIMIT_BYTES = 112 * MIB;
 
 const QUEUED_STATUS: StatusResponse = {
   project_id: "",
@@ -208,8 +211,25 @@ export function VideoBuilder() {
       setBusyMessage("Создаём изолированную рабочую область…");
       const project = await createProject();
       setProjectId(project.project_id);
-      setBusyMessage(`Загружаем ${images.length} изображений…`);
-      await uploadImages(project.project_id, images);
+      const audioBytes = audio.reduce((sum, file) => sum + file.size, 0);
+      const imageBudgetBytes = PROJECT_UPLOAD_SOFT_LIMIT_BYTES - audioBytes;
+      setBusyMessage(`Подготавливаем изображения: 0/${images.length}…`);
+      const prepared = await prepareImagesForUpload(images, {
+        budgetBytes: imageBudgetBytes,
+        onProgress: ({ completed, total }) => {
+          setBusyMessage(`Подготавливаем изображения: ${completed}/${total}…`);
+        },
+      });
+      setImages(prepared.files);
+      setBusyMessage(`Загружаем изображения пакетами: 0/${prepared.files.length}…`);
+      await uploadImagesInBatches(project.project_id, prepared.files, {
+        onProgress: ({ completedFiles, totalFiles, completedBatches, totalBatches }) => {
+          setBusyMessage(
+            `Загружаем изображения: ${completedFiles}/${totalFiles} `
+            + `(пакет ${completedBatches}/${totalBatches})…`,
+          );
+        },
+      });
       setBusyMessage(
         audio.length > 1
           ? `Склеиваем ${audio.length} аудиодорожки по очереди и анализируем речь…`

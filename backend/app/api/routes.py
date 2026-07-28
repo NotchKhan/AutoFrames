@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import mimetypes
 
-from fastapi import APIRouter, File, Request, UploadFile, status
+from fastapi import APIRouter, File, Form, Request, UploadFile, status
 from fastapi.responses import FileResponse
 
 from models.api import (
@@ -37,9 +37,13 @@ async def upload_images(
     project_id: str,
     request: Request,
     files: list[UploadFile] = File(..., description="Изображения по порядку сцен или с ручными метками времени"),
+    batch_id: str | None = Form(
+        None,
+        description="Необязательный ключ идемпотентности одной завершённой партии изображений",
+    ),
 ) -> UploadResponse:
     """Безопасно загрузить набор изображений и проверить их через Pillow."""
-    return await _projects(request).upload_images(project_id, files)
+    return await _projects(request).upload_images(project_id, files, batch_id=batch_id)
 
 
 @router.delete("/projects/{project_id}/images/{image_id}", response_model=UploadResponse)

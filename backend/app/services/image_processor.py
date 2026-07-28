@@ -57,6 +57,21 @@ def validate_image(path: Path, original_filename: str) -> tuple[int, int]:
 MotionAxis = Literal["horizontal", "vertical"]
 
 
+def _background_rgb(value: str) -> tuple[int, int, int]:
+    try:
+        return ImageColor.getcolor(value, "RGB")
+    except ValueError as exc:
+        raise ImageValidationError(f"Некорректный цвет фона: {value}.") from exc
+
+
+def _flatten_transparency(image: Image.Image, background_color: str) -> Image.Image:
+    """Return an opaque RGB image without turning transparent pixels black."""
+    if "A" not in image.getbands() and "transparency" not in image.info:
+        return image.convert("RGB")
+    background = Image.new("RGBA", image.size, (*_background_rgb(background_color), 255))
+    return Image.alpha_composite(background, image.convert("RGBA")).convert("RGB")
+
+
 def _smart_cover_size(
     source_size: tuple[int, int],
     target_size: tuple[int, int],
@@ -88,7 +103,8 @@ def prepare_image(
     try:
         with Image.open(source) as opened:
             _validate_metadata(opened, source, source.name)
-            image = ImageOps.exif_transpose(opened).convert("RGB")
+            oriented = ImageOps.exif_transpose(opened)
+            image = _flatten_transparency(oriented, settings.background_color)
             if settings.scale_mode == "cover":
                 cover_size = _smart_cover_size(image.size, size, motion_axis) if motion_axis else size
                 canvas = ImageOps.fit(
@@ -106,12 +122,7 @@ def prepare_image(
                 background.paste(foreground, position)
                 canvas = background
             else:
-                try:
-                    color = ImageColor.getrgb(settings.background_color)
-                except ValueError as exc:
-                    raise ImageValidationError(
-                        f"Некорректный цвет фона: {settings.background_color}."
-                    ) from exc
+                color = _background_rgb(settings.background_color)
                 canvas = Image.new("RGB", size, color)
                 foreground = ImageOps.contain(image, size, method=Image.Resampling.LANCZOS)
                 position = ((size[0] - foreground.width) // 2, (size[1] - foreground.height) // 2)

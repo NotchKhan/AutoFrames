@@ -83,6 +83,32 @@ def test_full_source_pan_command_crops_across_the_prepared_canvas(tmp_path: Path
     assert "zoompan" not in filter_graph
 
 
+def test_prepare_image_flattens_transparency_onto_configured_background(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "transparent.png"
+    image = Image.new("RGBA", (80, 80), (255, 0, 0, 0))
+    image.paste((255, 0, 0, 255), (20, 20, 60, 60))
+    image.save(source, format="PNG")
+    prepared = tmp_path / "prepared.png"
+
+    prepare_image(
+        source,
+        prepared,
+        VideoSettings(
+            width=80,
+            height=80,
+            scale_mode="fit_color",
+            background_color="#00ff00",
+        ),
+    )
+
+    with Image.open(prepared) as opened:
+        rendered = opened.convert("RGB")
+        assert rendered.getpixel((0, 0)) == (0, 255, 0)
+        assert rendered.getpixel((40, 40)) == (255, 0, 0)
+
+
 @pytest.mark.integration
 def test_full_source_pan_reaches_both_sides_of_original_photo(tmp_path: Path) -> None:
     ffmpeg, _ffprobe, errors = check_media_tools()

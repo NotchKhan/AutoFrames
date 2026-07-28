@@ -180,13 +180,14 @@ export function createProject(): Promise<ProjectResponse> {
   return request<ProjectResponse>("/api/projects", { method: "POST", timeoutMs: 30_000 });
 }
 
-export function uploadImages(projectId: string, files: File[]): Promise<unknown> {
+export function uploadImages(projectId: string, files: File[], batchId?: string): Promise<unknown> {
   const form = new FormData();
   files.forEach((file) => form.append("files", file, file.name));
+  if (batchId) form.append("batch_id", batchId);
   return request(`/api/projects/${projectId}/images`, {
     method: "POST",
     body: form,
-    timeoutMs: 180_000,
+    timeoutMs: 240_000,
   });
 }
 

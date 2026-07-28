@@ -228,7 +228,6 @@ class VideoRenderer:
             ]
             rng = random.Random(settings.video.seed)
             resolved_effects: list[str] = []
-            motion_axis_by_source: dict[Path, MotionAxis] = {}
             for position, (segment, frames, _first) in enumerate(quantized, start=1):
                 duration_ms = round(frames * 1000 / fps)
                 if settings.video.motion_mode == "smart":
@@ -249,37 +248,6 @@ class VideoRenderer:
                 else:
                     effect = settings.video.motion_mode
                 resolved_effects.append(effect)
-                if settings.video.motion_mode == "smart" and segment.source_path is not None:
-                    if effect in {"left_right", "right_left"}:
-                        motion_axis_by_source[segment.source_path] = "horizontal"
-                    elif effect in {"top_bottom", "bottom_top"}:
-                        motion_axis_by_source[segment.source_path] = "vertical"
-
-            prepared_by_source: dict[Path | None, Path] = {}
-            prepared_size_by_source: dict[Path | None, tuple[int, int]] = {}
-            for position, (segment, _frames, _first) in enumerate(quantized, start=1):
-                if cancel.is_set():
-                    raise ProcessCancelled("Операция отменена пользователем.")
-                if segment.source_path not in prepared_by_source:
-                    prepared = self.workspace.prepared_dir / f"{position:06d}.png"
-                    if segment.source_path is None:
-                        create_black_frame(prepared, settings.video.width, settings.video.height)
-                        prepared_size_by_source[segment.source_path] = (
-                            settings.video.width,
-                            settings.video.height,
-                        )
-                    else:
-                        prepared_size_by_source[segment.source_path] = prepare_image(
-                            segment.source_path,
-                            prepared,
-                            settings.video,
-                            motion_axis=motion_axis_by_source.get(segment.source_path),
-                        )
-                    prepared_by_source[segment.source_path] = prepared
-                callback(
-                    "Подготовка изображений", position, len(quantized),
-                    f"Подготовлен кадр {position}/{len(quantized)}: {segment.original_filename}",
-                )
 
             clip_paths: list[Path] = []
             callback("Создание видеоклипов", 0, len(quantized), "Запуск FFmpeg")
@@ -287,8 +255,30 @@ class VideoRenderer:
                 zip(quantized, resolved_effects, strict=True),
                 start=1,
             ):
+                if cancel.is_set():
+                    raise ProcessCancelled("Операция отменена пользователем.")
                 duration_ms = round(frames * 1000 / fps)
-                prepared_width, prepared_height = prepared_size_by_source[segment.source_path]
+                motion_axis: MotionAxis | None = None
+                if settings.video.motion_mode == "smart":
+                    if effect in {"left_right", "right_left"}:
+                        motion_axis = "horizontal"
+                    elif effect in {"top_bottom", "bottom_top"}:
+                        motion_axis = "vertical"
+                prepared = self.workspace.prepared_dir / f"{position:06d}.png"
+                if segment.source_path is None:
+                    create_black_frame(prepared, settings.video.width, settings.video.height)
+                    prepared_width, prepared_height = settings.video.width, settings.video.height
+                else:
+                    prepared_width, prepared_height = prepare_image(
+                        segment.source_path,
+                        prepared,
+                        settings.video,
+                        motion_axis=motion_axis,
+                    )
+                callback(
+                    "Подготовка изображений", position, len(quantized),
+                    f"Подготовлен кадр {position}/{len(quantized)}: {segment.original_filename}",
+                )
                 full_source_pan = settings.video.motion_mode == "smart" and (
                     (
                         effect in {"left_right", "right_left"}
@@ -300,14 +290,17 @@ class VideoRenderer:
                     )
                 )
                 clip = self.workspace.clips_dir / f"{position:06d}.mp4"
-                run_process(
-                    clip_command(
-                        self.ffmpeg, prepared_by_source[segment.source_path], clip,
-                        settings.video, effect, frames, duration_ms,
-                        full_source_pan=full_source_pan,
-                    ),
-                    log_path, cancel,
-                )
+                try:
+                    run_process(
+                        clip_command(
+                            self.ffmpeg, prepared, clip,
+                            settings.video, effect, frames, duration_ms,
+                            full_source_pan=full_source_pan,
+                        ),
+                        log_path, cancel,
+                    )
+                finally:
+                    prepared.unlink(missing_ok=True)
                 clip_paths.append(clip)
                 callback(
                     "Создание видеоклипов", position, len(quantized),
@@ -325,6 +318,10 @@ class VideoRenderer:
                 concat_command(self.ffmpeg, concat_file, silent_video),
                 log_path, cancel, cwd=self.workspace.clips_dir,
             )
+            if not settings.keep_debug_files:
+                concat_file.unlink(missing_ok=True)
+                for clip in clip_paths:
+                    clip.unlink(missing_ok=True)
             callback("Объединение видеоклипов", 1, 1, "Видеоряд объединён")
 
             temporary_output = self.workspace.render_dir / (output_path.stem + ".partial.mp4")
@@ -339,6 +336,8 @@ class VideoRenderer:
                 ),
                 log_path, cancel,
             )
+            if not settings.keep_debug_files:
+                silent_video.unlink(missing_ok=True)
             callback("Добавление аудио", 1, 1, "Аудио добавлено без изменения скорости")
 
             callback("Финальная проверка", 0, 1, "Проверка MP4 через ffprobe")

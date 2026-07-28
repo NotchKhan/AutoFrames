@@ -7,11 +7,17 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from PIL import Image
 
 from models.render import AudioSettings, RenderSettings, VideoSettings
 from models.timeline import TimelineItem
 from services import resource_estimator, video_renderer
-from services.resource_estimator import DiskEstimate, disk_estimate, storage_reserve_bytes
+from services.resource_estimator import (
+    DiskEstimate,
+    disk_estimate,
+    estimate_required_disk_bytes,
+    storage_reserve_bytes,
+)
 from services.video_renderer import VideoRenderer
 from services.workspace_manager import WorkspaceManager
 
@@ -89,8 +95,34 @@ def test_tiny_render_is_allowed_with_railway_trial_free_space(
     )
 
     assert estimate.reserve_bytes == 256 * MIB
-    assert estimate.required_bytes == 343_107_488
+    assert estimate.required_bytes == 338_960_288
     assert estimate.sufficient
+
+
+def test_disk_estimate_keeps_only_one_prepared_frame_in_peak_budget(tmp_path: Path) -> None:
+    settings = VideoSettings(
+        width=640,
+        height=360,
+        fps=30,
+        scale_mode="cover",
+        motion_mode="smart",
+        crf=20,
+    )
+
+    one_frame = estimate_required_disk_bytes(
+        timeline_items(tmp_path, count=1),
+        settings,
+        4_500,
+        reserve_bytes=256 * MIB,
+    )
+    many_frames = estimate_required_disk_bytes(
+        timeline_items(tmp_path, count=141),
+        settings,
+        4_500,
+        reserve_bytes=256 * MIB,
+    )
+
+    assert many_frames == one_frame
 
 
 def test_guard_still_rejects_render_that_would_consume_protected_reserve(
@@ -196,5 +228,97 @@ def test_renderer_clears_owned_intermediates_before_disk_preflight(
         assert observed
         assert not result.success
         assert result.error and "Недостаточно свободного места" in result.error
+    finally:
+        workspace.cleanup_project(keep_output=False, keep_logs=False)
+
+
+def test_renderer_prepares_one_frame_at_a_time_and_releases_consumed_files(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = WorkspaceManager()
+    try:
+        items = timeline_items(workspace.uploads_dir, count=2)
+        for index, item in enumerate(items, start=1):
+            Image.new("RGB", (320, 180), (index * 50, 80, 120)).save(
+                item.stored_path,
+                format="PNG",
+            )
+        audio = workspace.uploads_dir / "audio.wav"
+        audio.write_bytes(b"audio-placeholder")
+        monkeypatch.setattr(
+            video_renderer,
+            "disk_estimate",
+            lambda *_args, **_kwargs: DiskEstimate(
+                required_bytes=1,
+                free_bytes=2,
+                reserve_bytes=0,
+            ),
+        )
+
+        prepared_seen: list[str] = []
+
+        def fake_run_process(
+            command: list[str],
+            _log_path: Path,
+            _cancel: object | None = None,
+            **_kwargs: object,
+        ) -> None:
+            output = Path(command[-1])
+            if output.parent == workspace.clips_dir and output.suffix == ".mp4":
+                prepared = list(workspace.prepared_dir.glob("*.png"))
+                assert len(prepared) == 1
+                assert Path(command[command.index("-i") + 1]) == prepared[0]
+                prepared_seen.append(prepared[0].name)
+            elif output.name == "silent_video.mp4":
+                assert list(workspace.prepared_dir.iterdir()) == []
+                assert len(list(workspace.clips_dir.glob("*.mp4"))) == 2
+            elif output.name.endswith(".partial.mp4"):
+                assert list(workspace.prepared_dir.iterdir()) == []
+                assert list(workspace.clips_dir.iterdir()) == []
+                assert (workspace.render_dir / "silent_video.mp4").exists()
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(b"fake-media")
+
+        monkeypatch.setattr(video_renderer, "run_process", fake_run_process)
+        monkeypatch.setattr(
+            video_renderer,
+            "summarize_output",
+            lambda *_args: {
+                "duration_ms": 2_000,
+                "has_video": True,
+                "has_audio": True,
+                "video_codec": "h264",
+                "audio_codec": "aac",
+                "pixel_format": "yuv420p",
+                "is_cfr": True,
+                "container": "mp4",
+                "width": 160,
+                "height": 90,
+                "fps": 30.0,
+            },
+        )
+
+        result = VideoRenderer(Path("ffmpeg"), Path("ffprobe"), workspace).render(
+            items,
+            audio,
+            2_000,
+            RenderSettings(
+                VideoSettings(
+                    width=160,
+                    height=90,
+                    fps=30,
+                    preset="veryfast",
+                    motion_mode="none",
+                    transition_mode="none",
+                ),
+                AudioSettings(),
+                "extend_last",
+            ),
+            output_name="jit-prepared.mp4",
+        )
+
+        assert result.success, result.error
+        assert prepared_seen == ["000001.png", "000002.png"]
+        assert list(workspace.prepared_dir.iterdir()) == []
     finally:
         workspace.cleanup_project(keep_output=False, keep_logs=False)

@@ -36,14 +36,15 @@ def estimate_required_disk_bytes(
 ) -> int:
     if reserve_bytes < 0:
         raise ValueError("Резерв свободного места не может быть отрицательным.")
-    unique_sources = len({item.stored_path for item in items})
     prepared_frame_factor = (
         2
         if settings.motion_mode == "smart" and settings.scale_mode == "cover"
         else 1
     )
+    # Prepared PNGs are produced just in time and removed after each clip, so
+    # only one maximum-sized frame can coexist with the encoded intermediates.
     prepared_frames = (
-        unique_sources
+        min(len(items), 1)
         * settings.width
         * settings.height
         * 3

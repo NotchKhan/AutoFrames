@@ -602,6 +602,89 @@ def test_mixed_mode_across_upload_batches_is_atomic(
     assert len(list(record.workspace.uploads_dir.glob("image_*"))) == 1
 
 
+def test_completed_image_batch_retry_is_idempotent(
+    client: TestClient,
+    service: ProjectService,
+) -> None:
+    project_id = create_project(client)
+    files = [
+        ("files", ("01_scene.jpg", image_bytes(), "image/jpeg")),
+        ("files", ("02_scene.jpg", image_bytes(), "image/jpeg")),
+    ]
+    data = {"batch_id": "images-batch-0001"}
+
+    first = client.post(f"/api/projects/{project_id}/images", files=files, data=data)
+    retried = client.post(f"/api/projects/{project_id}/images", files=files, data=data)
+
+    assert first.status_code == 200
+    assert first.json()["uploaded_count"] == 2
+    assert retried.status_code == 200
+    assert retried.json()["uploaded_count"] == 0
+    assert retried.json()["total_images"] == 2
+    record = service._records[project_id]
+    assert [image.original_filename for image in record.images] == [
+        "01_scene.jpg",
+        "02_scene.jpg",
+    ]
+    assert len(list(record.workspace.uploads_dir.glob("image_*"))) == 2
+
+
+def test_image_batch_id_rejects_invalid_value_and_different_payload(
+    client: TestClient,
+    service: ProjectService,
+) -> None:
+    project_id = create_project(client)
+    first = client.post(
+        f"/api/projects/{project_id}/images",
+        files={"files": ("01_scene.jpg", image_bytes(), "image/jpeg")},
+        data={"batch_id": "images-batch-0002"},
+    )
+    assert first.status_code == 200
+
+    collision = client.post(
+        f"/api/projects/{project_id}/images",
+        files={"files": ("02_scene.jpg", image_bytes(), "image/jpeg")},
+        data={"batch_id": "images-batch-0002"},
+    )
+    invalid = client.post(
+        f"/api/projects/{project_id}/images",
+        files={"files": ("03_scene.jpg", image_bytes(), "image/jpeg")},
+        data={"batch_id": "bad id"},
+    )
+
+    assert collision.status_code == 409
+    assert collision.json()["error"]["code"] == "batch_id_conflict"
+    assert invalid.status_code == 422
+    assert invalid.json()["error"]["code"] == "invalid_batch_id"
+    record = service._records[project_id]
+    assert [image.original_filename for image in record.images] == ["01_scene.jpg"]
+    assert len(list(record.workspace.uploads_dir.glob("image_*"))) == 1
+
+
+def test_completed_image_batch_retry_does_not_bypass_project_busy(
+    client: TestClient,
+    service: ProjectService,
+) -> None:
+    project_id = create_project(client)
+    files = {"files": ("01_scene.jpg", image_bytes(), "image/jpeg")}
+    data = {"batch_id": "images-batch-0003"}
+    assert client.post(
+        f"/api/projects/{project_id}/images",
+        files=files,
+        data=data,
+    ).status_code == 200
+    service._records[project_id].mutation_in_progress = True
+
+    retried = client.post(
+        f"/api/projects/{project_id}/images",
+        files=files,
+        data=data,
+    )
+
+    assert retried.status_code == 409
+    assert retried.json()["error"]["code"] == "project_busy"
+
+
 def test_malformed_bracket_prefix_is_not_silently_treated_as_auto(client: TestClient) -> None:
     project_id = create_project(client)
     response = client.post(

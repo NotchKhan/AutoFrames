@@ -86,7 +86,10 @@ from utils.time_utils import format_ms
 
 LOGGER = logging.getLogger(__name__)
 _PROJECT_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+_BATCH_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
 _ACTIVE_STATUSES = {"queued", "rendering", "cancelling"}
+
+ImageBatchSignature = tuple[tuple[str, int | None, str], ...]
 
 
 @dataclass(slots=True)
@@ -120,6 +123,7 @@ class ProjectRecord:
     result_path: Path | None = None
     media_info: dict[str, Any] = field(default_factory=dict)
     last_render_request_id: str | None = None
+    image_batch_receipts: dict[str, ImageBatchSignature] = field(default_factory=dict)
     mutation_in_progress: bool = False
     lock: threading.RLock = field(default_factory=threading.RLock)
 
@@ -186,6 +190,29 @@ class ProjectService:
     @staticmethod
     def _mime(upload: UploadFile) -> str:
         return (upload.content_type or "").split(";", 1)[0].strip().lower()
+
+    @staticmethod
+    def _image_batch_id(batch_id: str | None) -> str | None:
+        if batch_id is None:
+            return None
+        if not _BATCH_ID_RE.fullmatch(batch_id):
+            raise ApiError(
+                422,
+                "invalid_batch_id",
+                "batch_id должен содержать от 8 до 128 символов: латинские буквы, цифры, точку, дефис, подчёркивание или двоеточие.",
+            )
+        return batch_id
+
+    @classmethod
+    def _image_batch_signature(cls, uploads: list[UploadFile]) -> ImageBatchSignature:
+        return tuple(
+            (
+                cls._external_filename(upload),
+                upload.size,
+                cls._mime(upload),
+            )
+            for upload in uploads
+        )
 
     @staticmethod
     def _project_size(record: ProjectRecord) -> int:
@@ -451,12 +478,40 @@ class ProjectService:
             transcript = speech_result
         return pauses, transcript, " ".join(warnings) or None
 
-    async def upload_images(self, project_id: str, uploads: list[UploadFile]) -> UploadResponse:
+    async def upload_images(
+        self,
+        project_id: str,
+        uploads: list[UploadFile],
+        *,
+        batch_id: str | None = None,
+    ) -> UploadResponse:
         record = self._get(project_id)
         if not uploads:
             raise ApiError(422, "images_missing", "Не выбрано ни одного изображения.")
+        normalized_batch_id = self._image_batch_id(batch_id)
+        batch_signature = (
+            self._image_batch_signature(uploads)
+            if normalized_batch_id is not None
+            else None
+        )
         with record.lock:
             self._ensure_editable(record)
+            if normalized_batch_id is not None:
+                completed_signature = record.image_batch_receipts.get(normalized_batch_id)
+                if completed_signature is not None:
+                    if completed_signature != batch_signature:
+                        raise ApiError(
+                            409,
+                            "batch_id_conflict",
+                            "Этот batch_id уже использован для другой партии изображений.",
+                        )
+                    return UploadResponse(
+                        project_id=project_id,
+                        uploaded_count=0,
+                        total_images=len(record.images),
+                        audio_uploaded=record.audio_path is not None,
+                        status=record.status,
+                    )
             if len(record.images) + len(uploads) > MAX_IMAGE_FILES:
                 raise ApiError(
                     413,
@@ -530,6 +585,8 @@ class ProjectService:
                     record.audio_analysis_complete = True
                 self._discard_result(record)
                 self._rebuild_timeline(record)
+                if normalized_batch_id is not None and batch_signature is not None:
+                    record.image_batch_receipts[normalized_batch_id] = batch_signature
                 return UploadResponse(
                     project_id=project_id,
                     uploaded_count=len(staged),
