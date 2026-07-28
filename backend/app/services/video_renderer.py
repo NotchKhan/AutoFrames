@@ -185,6 +185,9 @@ class VideoRenderer:
             segments, audio_offset, requested_duration_ms, pad_silence = build_render_plan(
                 items, audio_duration_ms, settings
             )
+            # Remove only this project's disposable artifacts before measuring the volume.
+            # A failed/retried render must not make its own next preflight fail on stale clips.
+            self.workspace.clear_intermediates()
             resources = disk_estimate(
                 self.workspace.root, list(items), settings.video, requested_duration_ms
             )
@@ -192,10 +195,10 @@ class VideoRenderer:
                 raise ValueError(
                     "Недостаточно свободного места для безопасного рендеринга. "
                     f"Требуется примерно {human_file_size(resources.required_bytes)}, "
+                    f"включая защитный резерв {human_file_size(resources.reserve_bytes)}; "
                     f"доступно {human_file_size(resources.free_bytes)}. "
                     "Освободите место или уменьшите разрешение/длительность."
                 )
-            self.workspace.clear_intermediates()
             fps = settings.video.fps
             total_frames = frame_index(requested_duration_ms, fps)
             if total_frames <= 0:
