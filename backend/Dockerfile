@@ -3,7 +3,9 @@ FROM python:3.13-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PORT=8000 \
-    STORAGE_ROOT=/data
+    STORAGE_ROOT=/data \
+    SCRATCH_ROOT=/tmp/autoframes/work \
+    OUTPUT_ROOT=/tmp/autoframes/output
 
 WORKDIR /srv/autoframes
 
@@ -12,8 +14,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && addgroup --system app \
     && adduser --system --ingroup app app \
-    && mkdir -p /data \
-    && chown app:app /data
+    && mkdir -p /data /tmp/autoframes/work /tmp/autoframes/output \
+    && chown -R app:app /data /tmp/autoframes
 
 COPY requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir --upgrade pip \

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+import os
 import random
-import shutil
 import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -189,7 +189,11 @@ class VideoRenderer:
             # A failed/retried render must not make its own next preflight fail on stale clips.
             self.workspace.clear_intermediates()
             resources = disk_estimate(
-                self.workspace.root, list(items), settings.video, requested_duration_ms
+                self.workspace.scratch_root,
+                list(items),
+                settings.video,
+                requested_duration_ms,
+                keep_debug_files=settings.keep_debug_files,
             )
             if not resources.sufficient:
                 raise ValueError(
@@ -379,16 +383,16 @@ class VideoRenderer:
             output_path.parent.mkdir(parents=True, exist_ok=True)
             temporary_output.replace(output_path)
             if output_name == "final_video.mp4":
-                # Уникальная копия остаётся в каталоге проекта, а этот атомарно
-                # обновляемый файл выполняет обещанный простой путь output/final_video.mp4.
+                # Жёсткая ссылка обновляет простой путь без второй полной копии MP4.
                 latest_temporary = OUTPUT_ROOT / f".{self.workspace.project_id}.latest.partial.mp4"
                 try:
-                    shutil.copy2(output_path, latest_temporary)
+                    latest_temporary.unlink(missing_ok=True)
+                    os.link(output_path, latest_temporary)
                     latest_temporary.replace(OUTPUT_ROOT / "final_video.mp4")
                 except OSError:
                     latest_temporary.unlink(missing_ok=True)
                     warnings.append(
-                        "Не удалось обновить копию output/final_video.mp4, но уникальный "
+                        "Не удалось обновить ссылку output/final_video.mp4, но уникальный "
                         "файл проекта успешно создан и проверен."
                     )
             callback(

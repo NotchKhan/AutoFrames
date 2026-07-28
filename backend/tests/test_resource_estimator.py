@@ -94,8 +94,8 @@ def test_tiny_render_is_allowed_with_railway_trial_free_space(
         4_500,
     )
 
-    assert estimate.reserve_bytes == 256 * MIB
-    assert estimate.required_bytes == 338_960_288
+    assert estimate.reserve_bytes == 64 * MIB
+    assert estimate.required_bytes == 103_176_470
     assert estimate.sufficient
 
 
@@ -125,11 +125,48 @@ def test_disk_estimate_keeps_only_one_prepared_frame_in_peak_budget(tmp_path: Pa
     assert many_frames == one_frame
 
 
+def test_eight_minute_1080p_project_fits_one_gibibyte_scratch_space(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        resource_estimator.shutil,
+        "disk_usage",
+        lambda _directory: SimpleNamespace(total=1024 * MIB, free=900 * MIB),
+    )
+
+    estimate = disk_estimate(
+        tmp_path,
+        timeline_items(tmp_path, count=146),
+        VideoSettings(width=1920, height=1080, fps=30, crf=20, motion_mode="none"),
+        480_000,
+    )
+
+    assert estimate.reserve_bytes == (1024 * MIB * 10 + 99) // 100
+    assert estimate.required_bytes < 850 * MIB
+    assert estimate.sufficient
+
+
+def test_debug_artifacts_require_more_scratch_space(tmp_path: Path) -> None:
+    items = timeline_items(tmp_path, count=146)
+    settings = VideoSettings(width=1920, height=1080, fps=30, crf=20)
+
+    normal = estimate_required_disk_bytes(items, settings, 480_000)
+    debug = estimate_required_disk_bytes(
+        items,
+        settings,
+        480_000,
+        keep_debug_files=True,
+    )
+
+    assert debug > normal
+
+
 def test_guard_still_rejects_render_that_would_consume_protected_reserve(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    free = 180 * MIB
+    free = 90 * MIB
     monkeypatch.setattr(
         resource_estimator.shutil,
         "disk_usage",
@@ -143,18 +180,18 @@ def test_guard_still_rejects_render_that_would_consume_protected_reserve(
         4_500,
     )
 
-    assert estimate.reserve_bytes == 256 * MIB
+    assert estimate.reserve_bytes == 64 * MIB
     assert estimate.required_bytes > free
     assert not estimate.sufficient
 
 
-def test_config_rejects_explicit_reserve_floor_below_128_mib() -> None:
+def test_config_rejects_explicit_scratch_reserve_floor_below_32_mib() -> None:
     backend_root = Path(__file__).resolve().parents[1]
     environment = os.environ.copy()
     environment.update({
         "PYTHONPATH": str(backend_root / "app"),
-        "STORAGE_RESERVE_MIN_MB": "127",
-        "STORAGE_RESERVE_MAX_MB": "512",
+        "SCRATCH_RESERVE_MIN_MB": "31",
+        "SCRATCH_RESERVE_MAX_MB": "128",
         "STORAGE_RESERVE_PERCENT": "10",
     })
 
@@ -170,8 +207,8 @@ def test_config_rejects_explicit_reserve_floor_below_128_mib() -> None:
     )
 
     assert result.returncode != 0
-    assert "STORAGE_RESERVE_MIN_MB" in result.stderr
-    assert "128" in result.stderr
+    assert "SCRATCH_RESERVE_MIN_MB" in result.stderr
+    assert "32" in result.stderr
 
 
 def test_renderer_clears_owned_intermediates_before_disk_preflight(
@@ -198,6 +235,7 @@ def test_renderer_clears_owned_intermediates_before_disk_preflight(
             _items: list[TimelineItem],
             _settings: VideoSettings,
             _duration_ms: int,
+            **_kwargs: object,
         ) -> DiskEstimate:
             nonlocal observed
             observed = True

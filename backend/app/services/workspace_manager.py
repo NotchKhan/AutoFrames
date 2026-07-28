@@ -16,6 +16,7 @@ from config import (
     MAX_IMAGE_FILES,
     MAX_TOTAL_IMAGE_BYTES,
     OUTPUT_ROOT,
+    SCRATCH_ROOT,
     TEMP_ROOT,
 )
 from models.timeline import SourceImage
@@ -47,9 +48,10 @@ class WorkspaceManager:
             raise ValueError("Некорректный ID проекта: ожидается внутренний 32-значный hex-ID.")
         self.root = TEMP_ROOT / self.project_id
         self.uploads_dir = self.root / "uploads"
-        self.prepared_dir = self.root / "prepared"
-        self.clips_dir = self.root / "clips"
-        self.render_dir = self.root / "render"
+        self.scratch_root = SCRATCH_ROOT / self.project_id
+        self.prepared_dir = self.scratch_root / "prepared"
+        self.clips_dir = self.scratch_root / "clips"
+        self.render_dir = self.scratch_root / "render"
         self.output_dir = OUTPUT_ROOT / self.project_id
         self.log_dir = LOG_ROOT / self.project_id
         for directory in (
@@ -164,8 +166,8 @@ class WorkspaceManager:
             raise ValueError("Некорректное внутреннее имя результата MP4.")
         return self.require_owned_path(self.output_dir / filename, self.output_dir)
 
-    def _remove_owned_tree(self, path: Path) -> None:
-        self.require_owned_path(path)
+    def _remove_owned_tree(self, path: Path, parent: Path) -> None:
+        self.require_owned_path(path, parent)
         if path.is_symlink():
             path.unlink(missing_ok=True)
         elif path.exists():
@@ -173,7 +175,7 @@ class WorkspaceManager:
 
     def clear_intermediates(self) -> None:
         for directory in (self.prepared_dir, self.clips_dir, self.render_dir):
-            self._remove_owned_tree(directory)
+            self._remove_owned_tree(directory, self.scratch_root)
             directory.mkdir(parents=True, exist_ok=True)
 
     def cleanup_project(self, keep_output: bool = True, keep_logs: bool = True) -> None:
@@ -183,6 +185,12 @@ class WorkspaceManager:
                 self.root.unlink(missing_ok=True)
             else:
                 shutil.rmtree(self.root)
+        if self.scratch_root.exists() or self.scratch_root.is_symlink():
+            self.require_owned_path(self.scratch_root, SCRATCH_ROOT)
+            if self.scratch_root.is_symlink():
+                self.scratch_root.unlink(missing_ok=True)
+            else:
+                shutil.rmtree(self.scratch_root)
         if not keep_output and self.output_dir.exists():
             self.require_owned_path(self.output_dir, OUTPUT_ROOT)
             shutil.rmtree(self.output_dir)
@@ -198,7 +206,7 @@ class WorkspaceManager:
         keep = set(project_ids_to_keep)
         removed_projects: set[str] = set()
         cutoff = time.time() - max(older_than_hours, 1.0) * 3600
-        for storage_root in (TEMP_ROOT, OUTPUT_ROOT, LOG_ROOT):
+        for storage_root in dict.fromkeys((TEMP_ROOT, SCRATCH_ROOT, OUTPUT_ROOT, LOG_ROOT)):
             if not storage_root.exists():
                 continue
             for directory in storage_root.iterdir():

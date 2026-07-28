@@ -256,8 +256,8 @@ Workflow `.github/workflows/ci.yml` повторяет эти проверки �
 | `MAX_IMAGE_COUNT` | `500` | максимум изображений проекта |
 | `MAX_AUDIO_TRACKS` | `20` | максимум последовательных частей озвучки в одной загрузке |
 | `PROJECT_TTL_HOURS` | `24` | срок хранения неактивного проекта |
-| `STORAGE_RESERVE_MIN_MB` | `256` | минимальный объём свободного места, который рендер никогда не планирует занять; явное значение ниже `128` отклоняется при запуске |
-| `STORAGE_RESERVE_MAX_MB` | `512` | верхняя граница динамического защитного резерва |
+| `SCRATCH_RESERVE_MIN_MB` | `64` | минимальный резерв временного диска рендера; значение ниже `32` отклоняется при запуске |
+| `SCRATCH_RESERVE_MAX_MB` | `128` | верхняя граница динамического резерва временного диска |
 | `STORAGE_RESERVE_PERCENT` | `10` | доля полной ёмкости filesystem для динамического резерва, от `0` до `50` |
 | `OPENAI_TRANSCRIPTION_ENABLED` | `false` | явно включает отправку подготовленного аудио в сервис распознавания |
 | `OPENAI_API_KEY` | — | секретный серверный ключ; не передаётся во frontend |
@@ -270,18 +270,19 @@ Workflow `.github/workflows/ci.yml` повторяет эти проверки �
 | `AUDIO_MINIMUM_SCENE_MS` | `700` | рекомендуемая минимальная длительность сцены |
 | `AUDIO_SILENCE_NOISE_DB` | `-35` | порог тишины для FFmpeg `silencedetect` |
 | `AUDIO_MINIMUM_SILENCE_MS` | `280` | минимальная длительность распознаваемой паузы |
-| `STORAGE_ROOT` | `backend/data` | постоянный каталог проектов, логов и результатов |
+| `STORAGE_ROOT` | `backend/data` | постоянный каталог загруженных исходников и логов |
+| `SCRATCH_ROOT` | `backend/data/scratch` | одноразовые кадры, клипы и служебные MP4; Docker использует `/tmp/autoframes/work` |
+| `OUTPUT_ROOT` | `backend/data/output` | готовые MP4; Docker использует `/tmp/autoframes/output` |
 | `FFMPEG_BINARY` | поиск в `PATH` | явный путь к FFmpeg |
 | `FFPROBE_BINARY` | поиск в `PATH` | явный путь к ffprobe |
 | `PORT` | `8000` | порт backend-контейнера |
 
-Защитный резерв диска вычисляется перед каждым рендером как
-`clamp(полная ёмкость filesystem × STORAGE_RESERVE_PERCENT / 100, STORAGE_RESERVE_MIN_MB, STORAGE_RESERVE_MAX_MB)`
-и прибавляется к оценке временных кадров, клипов, MP4 и аудио. Поэтому небольшой ролик не блокируется
-фиксированным резервом, превышающим весь volume, но backend всё равно отказывается начинать задачу,
-если после оценённых записей не останется безопасного минимума. Значения задаются в MiB
-(`1 МБ = 1024² байт`). Для Railway используйте явные значения
-`256`, `512` и `10`; уменьшить минимум можно не ниже `128` и только после наблюдения за фактическим потреблением.
+Защитный резерв вычисляется перед каждым рендером как
+`clamp(ёмкость временного filesystem × STORAGE_RESERVE_PERCENT / 100, SCRATCH_RESERVE_MIN_MB, SCRATCH_RESERVE_MAX_MB)`
+и прибавляется к оценке одного подготовленного кадра, клипов, MP4 и аудио. В Docker временные файлы и
+готовый результат вынесены с небольшого постоянного volume в ephemeral storage контейнера, а исходники
+остаются на `/data`. Backend не начинает задачу, если после оценённых записей не останется безопасного
+минимума. Значения задаются в MiB (`1 МБ = 1024² байт`).
 
 Готовые примеры находятся в `frontend/.env.example` и `backend/.env.example`. Файлы `.env*`, кроме примеров, не добавляются в Git и исключены из Docker build context. Почасовой лимит хранится в памяти процесса: он не заменяет общий billing limit провайдера, а при нескольких репликах умножается на их количество.
 
@@ -334,8 +335,8 @@ git push -u origin main
 3. В настройках сервиса укажите **Root Directory**: `/backend`, а в **Config File Path** — `/backend/railway.json`. Путь к конфигурации задаётся от корня репозитория и не наследует Root Directory.
 4. Подключите постоянный volume и смонтируйте его в `/data`; задайте `STORAGE_ROOT=/data` и `RAILWAY_RUN_UID=0`. Образ по умолчанию работает от пользователя `app`, а Railway монтирует volume с владельцем root, поэтому без этой настройки каталог может оказаться недоступен для записи.
 5. Не задавайте `PORT` вручную: Railway передаёт его при запуске, а `entrypoint.py` уже использует значение платформы.
-6. Для заявленных лимитов выбирайте как минимум Hobby с volume 5 GB; рекомендуется 10 GB, особенно для проектов до 2 GB и 500 изображений. На Free/Trial volume 0.5 GB используйте ограниченный профиль `MAX_TOTAL_SIZE_MB=128` и `PROJECT_TTL_HOURS=1`. Доступность, названия, цены и лимиты тарифов могут меняться — проверьте их в текущем аккаунте Railway перед публикацией.
-7. Добавьте `FRONTEND_ORIGIN`, `MAX_FILE_SIZE_MB`, `MAX_TOTAL_SIZE_MB`, `MAX_IMAGE_COUNT`, `PROJECT_TTL_HOURS`, а также явные настройки дискового резерва: `STORAGE_RESERVE_MIN_MB=256`, `STORAGE_RESERVE_MAX_MB=512`, `STORAGE_RESERVE_PERCENT=10`. Старое имя `MIN_FREE_RESERVE_MB` не используется.
+6. На Free/Trial volume 0.5 GB используйте ограниченный профиль `MAX_TOTAL_SIZE_MB=128` и `PROJECT_TTL_HOURS=1`; промежуточный рендер выполняется в ephemeral storage. Для более крупных исходников и более длинных роликов выбирайте Hobby и volume 5–10 GB. Доступность, названия, цены и лимиты тарифов могут меняться — проверьте их в текущем аккаунте Railway перед публикацией.
+7. Добавьте `FRONTEND_ORIGIN`, `MAX_FILE_SIZE_MB`, `MAX_TOTAL_SIZE_MB`, `MAX_IMAGE_COUNT`, `PROJECT_TTL_HOURS`, а при переопределении Docker defaults — `SCRATCH_RESERVE_MIN_MB=64`, `SCRATCH_RESERVE_MAX_MB=128`, `STORAGE_RESERVE_PERCENT=10`.
 8. Если backend закрыт корпоративным SSO/identity-aware proxy, для высокоточного режима дополнительно задайте секрет `OPENAI_API_KEY` и `OPENAI_TRANSCRIPTION_ENABLED=true`. На публичном API оставьте режим выключенным.
 9. Оставьте одну реплику/worker: очереди анализа и рендеринга хранятся в памяти процесса, а проекты — на локальном volume.
 10. Сгенерируйте публичный HTTPS-домен backend.

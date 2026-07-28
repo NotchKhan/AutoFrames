@@ -20,12 +20,16 @@ services:
         value: "20"
       - key: PROJECT_TTL_HOURS
         value: "24"
-      - key: STORAGE_RESERVE_MIN_MB
-        value: "256"
-      - key: STORAGE_RESERVE_MAX_MB
-        value: "512"
+      - key: SCRATCH_RESERVE_MIN_MB
+        value: "64"
+      - key: SCRATCH_RESERVE_MAX_MB
+        value: "128"
       - key: STORAGE_RESERVE_PERCENT
         value: "10"
+      - key: SCRATCH_ROOT
+        value: /tmp/autoframes/work
+      - key: OUTPUT_ROOT
+        value: /tmp/autoframes/output
       - key: OPENAI_TRANSCRIPTION_ENABLED
         value: "false"
       - key: OPENAI_API_KEY

@@ -5,15 +5,17 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from config import (
-    STORAGE_RESERVE_MAX_BYTES,
-    STORAGE_RESERVE_MIN_BYTES,
+    SCRATCH_RESERVE_MAX_BYTES,
+    SCRATCH_RESERVE_MIN_BYTES,
     STORAGE_RESERVE_PERCENT,
 )
 from models.render import VideoSettings
 from models.timeline import TimelineItem
 
 
-ENCODED_TRANSIENT_MULTIPLIER = 4.5
+ENCODED_TRANSIENT_MULTIPLIER = 2.35
+DEBUG_TRANSIENT_MULTIPLIER = 3.4
+MIB = 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,7 +34,8 @@ def estimate_required_disk_bytes(
     settings: VideoSettings,
     duration_ms: int,
     *,
-    reserve_bytes: int = STORAGE_RESERVE_MIN_BYTES,
+    reserve_bytes: int = SCRATCH_RESERVE_MIN_BYTES,
+    keep_debug_files: bool = False,
 ) -> int:
     if reserve_bytes < 0:
         raise ValueError("Резерв свободного места не может быть отрицательным.")
@@ -56,18 +59,19 @@ def estimate_required_disk_bytes(
     estimated_video_bitrate = (
         settings.width * settings.height * settings.fps * 0.08 * quality_factor * motion_factor
     )
-    encoded_passes = int(
-        estimated_video_bitrate * seconds / 8 * ENCODED_TRANSIENT_MULTIPLIER
+    transient_multiplier = (
+        DEBUG_TRANSIENT_MULTIPLIER if keep_debug_files else ENCODED_TRANSIENT_MULTIPLIER
     )
-    audio_and_overhead = int(seconds * 32_000 + 64 * 1024 * 1024)
+    encoded_passes = int(estimated_video_bitrate * seconds / 8 * transient_multiplier)
+    audio_and_overhead = int(seconds * 32_000 + 32 * MIB)
     return prepared_frames + encoded_passes + audio_and_overhead + reserve_bytes
 
 
 def storage_reserve_bytes(
     total_bytes: int,
     *,
-    minimum_bytes: int = STORAGE_RESERVE_MIN_BYTES,
-    maximum_bytes: int = STORAGE_RESERVE_MAX_BYTES,
+    minimum_bytes: int = SCRATCH_RESERVE_MIN_BYTES,
+    maximum_bytes: int = SCRATCH_RESERVE_MAX_BYTES,
     reserve_percent: int = STORAGE_RESERVE_PERCENT,
 ) -> int:
     """Return a bounded reserve derived from the filesystem's total capacity."""
@@ -84,6 +88,8 @@ def disk_estimate(
     items: list[TimelineItem],
     settings: VideoSettings,
     duration_ms: int,
+    *,
+    keep_debug_files: bool = False,
 ) -> DiskEstimate:
     usage = shutil.disk_usage(directory)
     reserve = storage_reserve_bytes(usage.total)
@@ -92,5 +98,6 @@ def disk_estimate(
         settings,
         duration_ms,
         reserve_bytes=reserve,
+        keep_debug_files=keep_debug_files,
     )
     return DiskEstimate(required, usage.free, reserve)

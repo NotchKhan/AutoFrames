@@ -83,19 +83,19 @@ SYNC_TOLERANCE_MS = 50
 MAX_VIDEO_DIMENSION = 8_192
 MAX_IMAGE_PIXELS = 100_000_000
 
-STORAGE_RESERVE_MIN_MB = _positive_int("STORAGE_RESERVE_MIN_MB", 256)
-STORAGE_RESERVE_MAX_MB = _positive_int("STORAGE_RESERVE_MAX_MB", 512)
 STORAGE_RESERVE_PERCENT = _bounded_int("STORAGE_RESERVE_PERCENT", 10, 0, 50)
-if STORAGE_RESERVE_MIN_MB < 128:
+SCRATCH_RESERVE_MIN_MB = _positive_int("SCRATCH_RESERVE_MIN_MB", 64)
+SCRATCH_RESERVE_MAX_MB = _positive_int("SCRATCH_RESERVE_MAX_MB", 128)
+if SCRATCH_RESERVE_MIN_MB < 32:
     raise RuntimeError(
-        "Переменная STORAGE_RESERVE_MIN_MB должна быть не меньше 128."
+        "Переменная SCRATCH_RESERVE_MIN_MB должна быть не меньше 32."
     )
-if STORAGE_RESERVE_MAX_MB < STORAGE_RESERVE_MIN_MB:
+if SCRATCH_RESERVE_MAX_MB < SCRATCH_RESERVE_MIN_MB:
     raise RuntimeError(
-        "Переменная STORAGE_RESERVE_MAX_MB не может быть меньше STORAGE_RESERVE_MIN_MB."
+        "Переменная SCRATCH_RESERVE_MAX_MB не может быть меньше SCRATCH_RESERVE_MIN_MB."
     )
-STORAGE_RESERVE_MIN_BYTES = STORAGE_RESERVE_MIN_MB * 1024 * 1024
-STORAGE_RESERVE_MAX_BYTES = STORAGE_RESERVE_MAX_MB * 1024 * 1024
+SCRATCH_RESERVE_MIN_BYTES = SCRATCH_RESERVE_MIN_MB * 1024 * 1024
+SCRATCH_RESERVE_MAX_BYTES = SCRATCH_RESERVE_MAX_MB * 1024 * 1024
 
 MAX_IMAGE_FILES = _positive_int("MAX_IMAGE_COUNT", 500)
 MAX_AUDIO_TRACKS = _positive_int("MAX_AUDIO_TRACKS", 20)
@@ -128,7 +128,12 @@ RENDER_CONCURRENCY = _bounded_int("RENDER_CONCURRENCY", 1, 1, 8)
 
 STORAGE_ROOT = Path(os.getenv("STORAGE_ROOT", str(BACKEND_ROOT / "data"))).expanduser().resolve()
 TEMP_ROOT = STORAGE_ROOT / "projects"
-OUTPUT_ROOT = STORAGE_ROOT / "output"
+SCRATCH_ROOT = Path(
+    os.getenv("SCRATCH_ROOT", str(STORAGE_ROOT / "scratch"))
+).expanduser().resolve()
+OUTPUT_ROOT = Path(
+    os.getenv("OUTPUT_ROOT", str(STORAGE_ROOT / "output"))
+).expanduser().resolve()
 LOG_ROOT = STORAGE_ROOT / "logs"
 
 _origins = os.getenv("FRONTEND_ORIGIN", "http://localhost:3000")
@@ -150,5 +155,5 @@ QUALITY_PRESETS: dict[str, tuple[str, int]] = {
 
 
 def ensure_storage_directories() -> None:
-    for directory in (TEMP_ROOT, OUTPUT_ROOT, LOG_ROOT):
+    for directory in (TEMP_ROOT, SCRATCH_ROOT, OUTPUT_ROOT, LOG_ROOT):
         directory.mkdir(parents=True, exist_ok=True)

@@ -35,11 +35,13 @@ def image_bytes(image_format: str = "JPEG") -> bytes:
 @pytest.fixture
 def service(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ProjectService:
     temp_root = tmp_path / "projects"
+    scratch_root = tmp_path / "scratch"
     output_root = tmp_path / "output"
     log_root = tmp_path / "logs"
-    for directory in (temp_root, output_root, log_root):
+    for directory in (temp_root, scratch_root, output_root, log_root):
         directory.mkdir()
     monkeypatch.setattr(workspace_module, "TEMP_ROOT", temp_root)
+    monkeypatch.setattr(workspace_module, "SCRATCH_ROOT", scratch_root)
     monkeypatch.setattr(workspace_module, "OUTPUT_ROOT", output_root)
     monkeypatch.setattr(workspace_module, "LOG_ROOT", log_root)
     monkeypatch.setattr(renderer_module, "OUTPUT_ROOT", output_root)
