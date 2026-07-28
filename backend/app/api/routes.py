@@ -36,7 +36,7 @@ def create_project(request: Request) -> ProjectResponse:
 async def upload_images(
     project_id: str,
     request: Request,
-    files: list[UploadFile] = File(..., description="Изображения по порядку сцен или с ручными метками времени"),
+    files: list[UploadFile] = File(..., description="Изображения в порядке добавления; имена не влияют на таймлайн"),
     batch_id: str | None = Form(
         None,
         description="Необязательный ключ идемпотентности одной завершённой партии изображений",

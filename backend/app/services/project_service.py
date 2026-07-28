@@ -58,7 +58,6 @@ from services.audio_analyzer import (
     detect_audio_pauses,
     prepare_transcription_audio,
 )
-from services.filename_parser import TimestampParseError, parse_timestamp
 from services.image_processor import ImageValidationError, validate_image
 from services.media_probe import (
     MediaProbeError,
@@ -72,12 +71,7 @@ from services.speech_recognizer import (
     SpeechTranscript,
     transcribe_audio,
 )
-from services.timeline_builder import (
-    MixedTimelineModeError,
-    build_audio_timeline,
-    build_timeline,
-    timeline_mode_for_filenames,
-)
+from services.timeline_builder import build_audio_timeline
 from services.timeline_validator import validate_timeline, validate_timeline_for_fps
 from services.video_renderer import VideoRenderer
 from services.workspace_manager import WorkspaceManager
@@ -281,10 +275,7 @@ class ProjectService:
         record.completed_operations = 0
 
     def _rebuild_timeline(self, record: ProjectRecord) -> None:
-        mode = timeline_mode_for_filenames(record.images)
-        if mode == "timestamps":
-            items, build_issues = build_timeline(record.images)
-        elif record.audio_duration_ms is not None:
+        if record.audio_duration_ms is not None:
             items, build_issues = build_audio_timeline(
                 record.images,
                 record.audio_duration_ms,
@@ -530,11 +521,6 @@ class ProjectService:
                     raise ApiError(415, "unsupported_image_type", f"Файл «{original_name}» имеет неподдерживаемое расширение.")
                 if self._mime(upload) not in IMAGE_MIME_TYPES:
                     raise ApiError(415, "invalid_image_mime", f"Файл «{original_name}» имеет недопустимый MIME-тип.")
-                if original_name.startswith("["):
-                    try:
-                        parse_timestamp(original_name)
-                    except TimestampParseError as exc:
-                        raise ApiError(422, "invalid_image_timestamp", str(exc)) from exc
                 stored = record.workspace.uploads_dir / f"image_{uuid.uuid4().hex}{extension}"
                 size = await self._stream_upload(
                     upload,
@@ -549,25 +535,9 @@ class ProjectService:
                     stored.unlink(missing_ok=True)
                     raise ApiError(422, "corrupted_image", str(exc)) from exc
                 staged.append(SourceImage(original_name, stored))
-            next_images = [*record.images, *staged]
-            folded_names = [source.original_filename.casefold() for source in next_images]
-            if len(folded_names) != len(set(folded_names)):
-                raise ApiError(
-                    422,
-                    "duplicate_image_filename",
-                    "Имена изображений должны быть уникальными, включая различия только в регистре.",
-                )
-            try:
-                timeline_mode = timeline_mode_for_filenames(next_images)
-            except TimestampParseError as exc:
-                raise ApiError(422, "invalid_image_timestamp", str(exc)) from exc
-            except MixedTimelineModeError as exc:
-                raise ApiError(422, "mixed_timeline_mode", str(exc)) from exc
-
             analysis_result: tuple[list[AudioPause], SpeechTranscript | None, str | None] | None = None
             if (
-                timeline_mode == "audio_pauses"
-                and record.audio_path is not None
+                record.audio_path is not None
                 and not record.audio_analysis_complete
             ):
                 analysis_result = await self._analyze_audio_for(
@@ -716,8 +686,7 @@ class ProjectService:
                     )
                 effective_audio_path = combined_path
 
-            timeline_mode = timeline_mode_for_filenames(record.images)
-            if record.images and timeline_mode == "audio_pauses":
+            if record.images:
                 pauses, transcript, analysis_warning = await self._analyze_audio_for(
                     record,
                     effective_audio_path,
@@ -786,16 +755,6 @@ class ProjectService:
         record = self._get(project_id)
         with record.lock:
             self._ensure_editable(record)
-            try:
-                mode = timeline_mode_for_filenames(record.images)
-            except (MixedTimelineModeError, TimestampParseError) as exc:
-                raise ApiError(422, "timeline_mode_invalid", str(exc)) from exc
-            if mode == "timestamps":
-                raise ApiError(
-                    422,
-                    "manual_timeline_strategy",
-                    "Способ автосинхронизации нельзя менять для кадров с ручными временными метками.",
-                )
             if not record.images:
                 raise ApiError(422, "images_missing", "Добавьте хотя бы одно изображение.")
             if record.audio_path is None or record.audio_duration_ms is None:
@@ -858,11 +817,9 @@ class ProjectService:
             timeline_end = items[-1].end_ms if items else None
             audio_duration = record.audio_duration_ms
             difference = audio_duration - timeline_end if audio_duration is not None and timeline_end is not None else None
-            timeline_mode = timeline_mode_for_filenames(record.images)
+            timeline_mode = "audio_pauses"
             boundary_kinds = {item.boundary_kind for item in record.timeline[:-1]}
-            if timeline_mode == "timestamps":
-                analysis_method = "manual"
-            elif not record.timeline and record.speech_transcript is not None:
+            if not record.timeline and record.speech_transcript is not None:
                 analysis_method = "unavailable"
             elif boundary_kinds & {
                 "sentence_pause", "sentence_end", "segment_pause", "segment_end"
@@ -875,9 +832,9 @@ class ProjectService:
             else:
                 analysis_method = "even"
             analysis_warnings: list[str] = []
-            if timeline_mode == "audio_pauses" and record.audio_analysis_warning:
+            if record.audio_analysis_warning:
                 analysis_warnings.append(record.audio_analysis_warning)
-            if timeline_mode == "audio_pauses" and record.speech_transcript is not None:
+            if record.speech_transcript is not None:
                 sentence_count = record.speech_transcript.estimated_sentence_count
                 internal_sentence_count = (
                     record.speech_transcript.internal_sentence_boundary_count

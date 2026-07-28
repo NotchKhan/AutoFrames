@@ -183,15 +183,15 @@ export function FileUpload({
       )}
 
       <div className="tip-row">
-        <span className="tip-example" aria-hidden="true">01 → 02</span>
+        <span className="tip-example" aria-hidden="true">1 → 2</span>
         <div>
-          <strong>Временные метки больше не обязательны</strong>
-          <p>Назовите кадры <code>01_scene.jpg</code>, <code>02_scene.jpg</code> и далее — смены подстроятся под окончания фраз и паузы.</p>
+          <strong>Названия файлов не важны</strong>
+          <p>Кадры идут в порядке добавления, а смены автоматически подстраиваются под окончания фраз и паузы.</p>
         </div>
       </div>
 
       <div className="panel-actions">
-        <p className="muted">Порядок определяется по номерам. Старые метки <code>[MM-SS]</code> поддерживаются отдельным режимом — не смешивайте их с обычными именами.</p>
+        <p className="muted">Можно использовать любые имена, в том числе одинаковые или начинающиеся со скобок.</p>
         <button
           type="button"
           className="primary-button"

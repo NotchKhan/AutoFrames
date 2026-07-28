@@ -75,7 +75,7 @@ def test_audio_concat_preserves_input_order_and_normalizes_tracks(
     assert captured[captured.index("-c:a") + 1] == "aac"
 
 
-def test_audio_timeline_uses_natural_order_and_nearby_pauses() -> None:
+def test_audio_timeline_preserves_added_order_and_uses_nearby_pauses() -> None:
     items, issues = build_audio_timeline(
         [source("scene10.jpg"), source("scene2.jpg"), source("scene1.jpg")],
         12_000,
@@ -84,9 +84,9 @@ def test_audio_timeline_uses_natural_order_and_nearby_pauses() -> None:
 
     assert not issues
     assert [item.original_filename for item in items] == [
-        "scene1.jpg",
-        "scene2.jpg",
         "scene10.jpg",
+        "scene2.jpg",
+        "scene1.jpg",
     ]
     assert [item.end_ms for item in items] == [3_880, 7_780, 12_000]
     assert items[-1].end_ms == 12_000

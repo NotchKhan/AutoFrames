@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from typing import Literal
@@ -13,48 +12,21 @@ from services.speech_recognizer import SpeechTranscript
 from utils.time_utils import format_ms, frame_index
 
 
-_NATURAL_PART_RE = re.compile(r"(\d+)")
 _MAX_SUPPORTED_FPS = 60
 
 
 class MixedTimelineModeError(ValueError):
-    """В одном наборе нельзя смешивать ручные метки и автоматические имена."""
-
-
-def _natural_key(value: str) -> tuple[tuple[int, int | str], ...]:
-    return tuple(
-        (0, int(part)) if part.isdigit() else (1, part.casefold())
-        for part in _NATURAL_PART_RE.split(value)
-        if part
-    )
+    """Оставлено для совместимости старых импортов; режим имён больше не используется."""
 
 
 def timeline_mode_for_filenames(sources: Sequence[SourceImage]) -> str:
-    if not sources:
-        return "audio_pauses"
-    timestamped = 0
-    plain = 0
-    for source in sources:
-        try:
-            parse_timestamp(source.original_filename)
-            timestamped += 1
-        except TimestampParseError:
-            if source.original_filename.startswith("["):
-                raise
-            plain += 1
-    if timestamped and plain:
-        raise MixedTimelineModeError(
-            "Нельзя смешивать изображения с ручными метками [MM-SS] и обычными именами. "
-            "Используйте один режим для всего проекта."
-        )
-    return "timestamps" if timestamped else "audio_pauses"
+    del sources
+    return "audio_pauses"
 
 
 def filenames_have_timestamps(sources: Sequence[SourceImage]) -> bool:
-    try:
-        return timeline_mode_for_filenames(sources) == "timestamps"
-    except (MixedTimelineModeError, TimestampParseError):
-        return False
+    del sources
+    return False
 
 
 _BOUNDARY_LABELS: dict[BoundaryKind, str] = {
@@ -90,14 +62,9 @@ def build_audio_timeline(
             "Уменьшите число изображений или используйте более длинную озвучку."
         )]
 
-    ordered = sorted(
-        sources,
-        key=lambda source: (
-            _natural_key(source.original_filename),
-            source.original_filename.casefold(),
-            source.original_filename,
-        ),
-    )
+    # Имя файла — только подпись для пользователя. Порядок всегда совпадает
+    # с порядком добавления, включая загрузку несколькими последовательными пакетами.
+    ordered = list(sources)
     try:
         detected = plan_scene_boundaries(
             audio_duration_ms,

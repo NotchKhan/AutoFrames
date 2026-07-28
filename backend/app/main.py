@@ -40,7 +40,7 @@ def create_app(projects: ProjectService | None = None) -> FastAPI:
         title=APP_TITLE,
         description=(
             "API для автоматической синхронизации кадров по фразам и паузам в аудио, "
-            "ручных временных меток и фонового рендеринга MP4 через FFmpeg."
+            "порядку добавления изображений и фонового рендеринга MP4 через FFmpeg."
         ),
         version="1.0.0",
         docs_url="/docs",

@@ -97,7 +97,7 @@ def test_health_and_project_creation(client: TestClient) -> None:
     assert len(project_id) == 32
 
 
-def test_upload_and_sorted_timeline(client: TestClient) -> None:
+def test_upload_preserves_added_order_and_ignores_filename_timestamps(client: TestClient) -> None:
     project_id = create_project(client)
     upload_valid_project(client, project_id)
     response = client.get(f"/api/projects/{project_id}/timeline")
@@ -105,12 +105,12 @@ def test_upload_and_sorted_timeline(client: TestClient) -> None:
     payload = response.json()
     assert payload["is_valid"] is True
     assert [row["original_filename"] for row in payload["items"]] == [
-        "[0-05]_first.jpg",
         "[0-14]_второй кадр.jpg",
+        "[0-05]_first.jpg",
     ]
     assert [(row["start_ms"], row["end_ms"], row["duration_ms"]) for row in payload["items"]] == [
-        (0, 5_000, 5_000),
-        (5_000, 14_000, 9_000),
+        (0, 4_880, 4_880),
+        (4_880, 14_000, 9_120),
     ]
     assert payload["difference_ms"] == 0
     assert payload["audio_track_count"] == 1
@@ -194,17 +194,24 @@ def test_failed_multi_track_concat_preserves_previous_audio(
     assert list(record.workspace.uploads_dir.glob("audio_*")) == [old_path]
 
 
-def test_duplicate_timestamps_are_reported(client: TestClient) -> None:
+def test_duplicate_timestamp_like_names_are_ignored(client: TestClient) -> None:
     project_id = create_project(client)
     files = [
         ("files", ("[0-05]_one.png", image_bytes("PNG"), "image/png")),
         ("files", ("[0-05]_два.png", image_bytes("PNG"), "image/png")),
     ]
     assert client.post(f"/api/projects/{project_id}/images", files=files).status_code == 200
+    audio = {"file": ("voice.wav", b"RIFF-valid-test-data", "audio/wav")}
+    assert client.post(f"/api/projects/{project_id}/audio", files=audio).status_code == 200
     response = client.get(f"/api/projects/{project_id}/timeline")
     assert response.status_code == 200
-    assert response.json()["is_valid"] is False
-    assert any("одинаковое время окончания" in issue["message"] for issue in response.json()["issues"])
+    payload = response.json()
+    assert payload["is_valid"] is True
+    assert payload["timeline_mode"] == "audio_pauses"
+    assert [row["original_filename"] for row in payload["items"]] == [
+        "[0-05]_one.png",
+        "[0-05]_два.png",
+    ]
 
 
 def test_images_without_timestamps_are_synced_to_audio_pauses(
@@ -230,9 +237,9 @@ def test_images_without_timestamps_are_synced_to_audio_pauses(
     assert payload["analysis_method"] == "pauses"
     assert "ключ" in payload["analysis_warning"].lower()
     assert [row["original_filename"] for row in payload["items"]] == [
-        "scene_1.jpg",
-        "scene_2.jpg",
         "scene_10.jpg",
+        "scene_2.jpg",
+        "scene_1.jpg",
     ]
     assert [row["end_ms"] for row in payload["items"]] == [4_880, 9_680, 14_000]
     assert payload["difference_ms"] == 0
@@ -261,7 +268,7 @@ def test_sync_strategy_can_be_changed_and_rebuilds_automatic_timeline(
         assert len(response.json()["items"]) == 4
 
 
-def test_sync_strategy_is_rejected_for_manual_timestamp_mode(client: TestClient) -> None:
+def test_sync_strategy_ignores_timestamp_like_names(client: TestClient) -> None:
     project_id = create_project(client)
     upload_valid_project(client, project_id)
 
@@ -270,8 +277,9 @@ def test_sync_strategy_is_rejected_for_manual_timestamp_mode(client: TestClient)
         json={"strategy": "even"},
     )
 
-    assert response.status_code == 422
-    assert response.json()["error"]["code"] == "manual_timeline_strategy"
+    assert response.status_code == 200
+    assert response.json()["timeline_mode"] == "audio_pauses"
+    assert response.json()["sync_strategy"] == "even"
 
 
 def test_impossible_photo_count_is_reported_before_render(
@@ -536,7 +544,7 @@ def test_prepared_transcription_audio_is_removed_after_provider_failure(
     assert list(record.workspace.prepared_dir.glob("transcription_*.mp3")) == []
 
 
-def test_manual_timestamps_never_call_speech_recognition(
+def test_timestamp_like_names_still_use_speech_recognition(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -545,7 +553,14 @@ def test_manual_timestamps_never_call_speech_recognition(
     async def recognize(*_args: object, **_kwargs: object) -> SpeechTranscript:
         nonlocal calls
         calls += 1
-        raise AssertionError("manual mode must not call speech recognition")
+        return SpeechTranscript(
+            "ru",
+            (
+                SpeechWord("Первая.", 500, 4_800),
+                SpeechWord("Вторая.", 5_400, 9_600),
+            ),
+            (),
+        )
 
     monkeypatch.setattr(project_service_module, "OPENAI_API_KEY", "test-key")
     monkeypatch.setattr(project_service_module, "OPENAI_TRANSCRIPTION_ENABLED", True)
@@ -554,21 +569,20 @@ def test_manual_timestamps_never_call_speech_recognition(
     upload_valid_project(client, project_id)
 
     payload = client.get(f"/api/projects/{project_id}/timeline").json()
-    assert calls == 0
-    assert not client.app.state.projects._transcription_usage
-    assert payload["timeline_mode"] == "timestamps"
-    assert payload["analysis_method"] == "manual"
+    assert calls == 1
+    assert payload["timeline_mode"] == "audio_pauses"
+    assert payload["analysis_method"] != "manual"
 
 
-def test_mixed_manual_and_automatic_filenames_are_rejected(client: TestClient) -> None:
+def test_mixed_bracketed_and_plain_filenames_are_accepted(client: TestClient) -> None:
     project_id = create_project(client)
     files = [
         ("files", ("[0-05]_manual.jpg", image_bytes(), "image/jpeg")),
         ("files", ("02_auto.jpg", image_bytes(), "image/jpeg")),
     ]
     response = client.post(f"/api/projects/{project_id}/images", files=files)
-    assert response.status_code == 422
-    assert response.json()["error"]["code"] == "mixed_timeline_mode"
+    assert response.status_code == 200
+    assert response.json()["total_images"] == 2
 
 
 @pytest.mark.parametrize(
@@ -578,7 +592,7 @@ def test_mixed_manual_and_automatic_filenames_are_rejected(client: TestClient) -
         ("01_auto.jpg", "[0-05]_manual.jpg"),
     ],
 )
-def test_mixed_mode_across_upload_batches_is_atomic(
+def test_names_are_ignored_across_upload_batches(
     client: TestClient,
     service: ProjectService,
     first_name: str,
@@ -595,11 +609,10 @@ def test_mixed_mode_across_upload_batches_is_atomic(
         files={"files": (second_name, image_bytes(), "image/jpeg")},
     )
 
-    assert response.status_code == 422
-    assert response.json()["error"]["code"] == "mixed_timeline_mode"
+    assert response.status_code == 200
     record = service._records[project_id]
-    assert [image.original_filename for image in record.images] == [first_name]
-    assert len(list(record.workspace.uploads_dir.glob("image_*"))) == 1
+    assert [image.original_filename for image in record.images] == [first_name, second_name]
+    assert len(list(record.workspace.uploads_dir.glob("image_*"))) == 2
 
 
 def test_completed_image_batch_retry_is_idempotent(
@@ -685,17 +698,17 @@ def test_completed_image_batch_retry_does_not_bypass_project_busy(
     assert retried.json()["error"]["code"] == "project_busy"
 
 
-def test_malformed_bracket_prefix_is_not_silently_treated_as_auto(client: TestClient) -> None:
+def test_malformed_bracket_prefix_is_accepted_as_an_ordinary_name(client: TestClient) -> None:
     project_id = create_project(client)
     response = client.post(
         f"/api/projects/{project_id}/images",
         files={"files": ("[bad]_scene.jpg", image_bytes(), "image/jpeg")},
     )
-    assert response.status_code == 422
-    assert response.json()["error"]["code"] == "invalid_image_timestamp"
+    assert response.status_code == 200
+    assert response.json()["total_images"] == 1
 
 
-def test_render_rejects_scenes_shorter_than_one_output_frame(client: TestClient) -> None:
+def test_timestamp_like_names_do_not_set_scene_duration(client: TestClient) -> None:
     project_id = create_project(client)
     files = [
         ("files", ("[0-00.010]_one.jpg", image_bytes(), "image/jpeg")),
@@ -704,9 +717,11 @@ def test_render_rejects_scenes_shorter_than_one_output_frame(client: TestClient)
     assert client.post(f"/api/projects/{project_id}/images", files=files).status_code == 200
     audio = {"file": ("voice.wav", b"RIFF-valid-test-data", "audio/wav")}
     assert client.post(f"/api/projects/{project_id}/audio", files=audio).status_code == 200
-    response = client.post(f"/api/projects/{project_id}/render", json={})
-    assert response.status_code == 422
-    assert response.json()["error"]["code"] == "invalid_render_settings"
+    response = client.get(f"/api/projects/{project_id}/timeline")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["timeline_mode"] == "audio_pauses"
+    assert [row["end_ms"] for row in payload["items"]] == [4_880, 14_000]
 
 
 @pytest.mark.parametrize(
