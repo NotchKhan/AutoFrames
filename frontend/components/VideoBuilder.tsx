@@ -249,7 +249,7 @@ export function VideoBuilder() {
       <div id="top" className="page-shell">
         <section className="hero">
           <div className="hero-copy">
-            <span className="hero-badge"><i aria-hidden="true" /> Монтаж без рутины</span>
+            <span className="hero-badge">Монтаж без рутины</span>
             <h1>Кадры становятся <em>готовым видео.</em></h1>
             <p>
               Добавьте изображения и озвучку — AutoFrames найдёт окончания фраз и естественные
