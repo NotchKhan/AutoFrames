@@ -18,6 +18,20 @@ const IMAGE_EXTENSIONS = ".png,.jpg,.jpeg,.webp,.bmp";
 const AUDIO_EXTENSIONS = ".mp3,.wav,.m4a,.aac,.ogg,.flac";
 
 
+function imagesInAddedOrder(files: FileList): File[] {
+  // Windows/Chromium отдаёт массовое выделение в обратном порядке относительно
+  // добавления пользователя. Разворачиваем только здесь; backend, оптимизация
+  // и пакетная загрузка дальше сохраняют полученную последовательность.
+  return Array.from(files)
+    .filter((file) =>
+      [".png", ".jpg", ".jpeg", ".webp", ".bmp"].some((extension) =>
+        file.name.toLowerCase().endsWith(extension),
+      ),
+    )
+    .reverse();
+}
+
+
 export function FileUpload({
   images,
   audio,
@@ -33,9 +47,7 @@ export function FileUpload({
   const totalAudioSize = audio.reduce((sum, file) => sum + file.size, 0);
 
   function acceptDropped(files: FileList) {
-    const selected = Array.from(files).filter((file) =>
-      [".png", ".jpg", ".jpeg", ".webp", ".bmp"].some((extension) => file.name.toLowerCase().endsWith(extension)),
-    );
+    const selected = imagesInAddedOrder(files);
     if (selected.length) {
       onImagesChange(selected);
     }
@@ -100,7 +112,9 @@ export function FileUpload({
           type="file"
           accept={IMAGE_EXTENSIONS}
           multiple
-          onChange={(event) => onImagesChange(Array.from(event.target.files ?? []))}
+          onChange={(event) => {
+            if (event.target.files) onImagesChange(imagesInAddedOrder(event.target.files));
+          }}
         />
 
         <button
