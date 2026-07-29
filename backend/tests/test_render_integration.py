@@ -81,11 +81,11 @@ def test_sequential_audio_concat_with_real_ffmpeg(tmp_path: Path) -> None:
         [first, second],
         ffmpeg,
         destination,
-        900,
+        1_650,
     )
 
     assert destination.stat().st_size > 0
-    assert 850 <= probe_audio_duration_ms(destination, ffprobe) <= 1_000
+    assert 1_600 <= probe_audio_duration_ms(destination, ffprobe) <= 1_750
 
 
 @pytest.mark.integration

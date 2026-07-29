@@ -7,6 +7,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from config import AUDIO_TRACK_GAP_MS
+
 
 _SILENCE_START_RE = re.compile(r"silence_start:\s*(-?\d+(?:\.\d+)?)")
 _SILENCE_END_RE = re.compile(r"silence_end:\s*(-?\d+(?:\.\d+)?)")
@@ -40,7 +42,7 @@ def concatenate_audio_tracks(
     destination: Path,
     total_duration_ms: int,
 ) -> Path:
-    """Склеивает дорожки строго по порядку без наложения и нормализует формат."""
+    """Склеивает дорожки по порядку с короткой паузой и нормализует формат."""
     if len(audio_paths) < 2:
         raise ValueError("Для склейки нужны как минимум две аудиодорожки.")
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -50,19 +52,28 @@ def concatenate_audio_tracks(
     for audio_path in audio_paths:
         command.extend(["-i", str(audio_path)])
 
-    prepared_labels: list[str] = []
+    sequence_labels: list[str] = []
     filter_parts: list[str] = []
     for index in range(len(audio_paths)):
         label = f"a{index}"
-        prepared_labels.append(f"[{label}]")
+        sequence_labels.append(f"[{label}]")
         filter_parts.append(
             f"[{index}:a:0]aresample=48000,"
             "aformat=sample_fmts=fltp:channel_layouts=stereo,"
             f"asetpts=PTS-STARTPTS[{label}]"
         )
+        if index < len(audio_paths) - 1:
+            gap_label = f"gap{index}"
+            sequence_labels.append(f"[{gap_label}]")
+            filter_parts.append(
+                "anullsrc=r=48000:cl=stereo:"
+                f"d={AUDIO_TRACK_GAP_MS / 1000:.3f},"
+                "aformat=sample_fmts=fltp:channel_layouts=stereo"
+                f"[{gap_label}]"
+            )
     filter_parts.append(
-        "".join(prepared_labels)
-        + f"concat=n={len(audio_paths)}:v=0:a=1[outa]"
+        "".join(sequence_labels)
+        + f"concat=n={len(sequence_labels)}:v=0:a=1[outa]"
     )
     command.extend([
         "-filter_complex",

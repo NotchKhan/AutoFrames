@@ -71,7 +71,8 @@ def test_audio_concat_preserves_input_order_and_normalizes_tracks(
     filter_graph = captured[captured.index("-filter_complex") + 1]
     assert "[0:a:0]aresample=48000" in filter_graph
     assert "[1:a:0]aresample=48000" in filter_graph
-    assert "[a0][a1]concat=n=2:v=0:a=1[outa]" in filter_graph
+    assert "anullsrc=r=48000:cl=stereo:d=0.750" in filter_graph
+    assert "[a0][gap0][a1]concat=n=3:v=0:a=1[outa]" in filter_graph
     assert captured[captured.index("-c:a") + 1] == "aac"
 
 

@@ -128,7 +128,7 @@ def test_multiple_audio_tracks_are_concatenated_in_uploaded_order(
 
     def probe(path: Path, _ffprobe: Path) -> int:
         if path.name.startswith("audio_combined_"):
-            return 7_000
+            return 7_750
         return {b"first-track": 3_000, b"second-track": 4_000}[path.read_bytes()]
 
     def concat(
@@ -152,17 +152,17 @@ def test_multiple_audio_tracks_are_concatenated_in_uploaded_order(
 
     assert response.status_code == 200
     assert response.json()["uploaded_count"] == 2
-    assert concat_calls == [([b"first-track", b"second-track"], 7_000)]
+    assert concat_calls == [([b"first-track", b"second-track"], 7_750)]
     record = service._records[project_id]
     assert record.audio_original_filenames == ["01_intro.wav", "02_finish.mp3"]
-    assert record.audio_duration_ms == 7_000
+    assert record.audio_duration_ms == 7_750
     assert record.audio_path is not None
     assert record.audio_path.name.startswith("audio_combined_")
     assert record.audio_path.read_bytes() == b"combined-audio"
     assert list(record.workspace.uploads_dir.glob("audio_*")) == [record.audio_path]
     timeline = client.get(f"/api/projects/{project_id}/timeline").json()
     assert timeline["audio_track_count"] == 2
-    assert timeline["audio_duration_ms"] == 7_000
+    assert timeline["audio_duration_ms"] == 7_750
 
 
 def test_failed_multi_track_concat_preserves_previous_audio(

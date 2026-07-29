@@ -20,6 +20,7 @@ from config import (
     AUDIO_MINIMUM_SCENE_MS,
     AUDIO_MINIMUM_SILENCE_MS,
     AUDIO_SILENCE_NOISE_DB,
+    AUDIO_TRACK_GAP_MS,
     AUDIO_EXTENSIONS,
     AUDIO_MIME_TYPES,
     IMAGE_EXTENSIONS,
@@ -642,6 +643,8 @@ class ProjectService:
                     ) from exc
 
             expected_duration_ms = sum(track_durations_ms)
+            if len(track_durations_ms) > 1:
+                expected_duration_ms += AUDIO_TRACK_GAP_MS * (len(track_durations_ms) - 1)
             if len(staged_paths) == 1:
                 effective_audio_path = staged_paths[0]
                 duration_ms = track_durations_ms[0]

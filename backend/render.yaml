@@ -40,5 +40,7 @@ services:
         value: "120"
       - key: AUDIO_ANALYSIS_CONCURRENCY
         value: "2"
+      - key: AUDIO_TRACK_GAP_MS
+        value: "750"
       - key: RENDER_CONCURRENCY
         value: "1"
