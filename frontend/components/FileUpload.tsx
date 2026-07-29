@@ -32,6 +32,13 @@ function imagesInAddedOrder(files: FileList): File[] {
 }
 
 
+function audioInAddedOrder(files: FileList): File[] {
+  // Используем то же направление, что и для массового выбора изображений.
+  // Очередь на экране и последовательная склейка backend сохраняют этот порядок.
+  return Array.from(files).reverse();
+}
+
+
 export function FileUpload({
   images,
   audio,
@@ -146,7 +153,9 @@ export function FileUpload({
           accept={AUDIO_EXTENSIONS}
           multiple
           onClick={(event) => { event.currentTarget.value = ""; }}
-          onChange={(event) => onAudioChange(Array.from(event.target.files ?? []))}
+          onChange={(event) => {
+            if (event.target.files) onAudioChange(audioInAddedOrder(event.target.files));
+          }}
         />
       </div>
 
