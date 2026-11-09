@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="kk">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#40104d" />
+    <meta name="description" content="Психокоррекция тақырыбы бойынша алты тест: нәтижесі есептелетін 300 сұрақ." />
+    <title>Психокоррекция — тесттер</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='24' fill='%2340104d'/%3E%3Ctext x='50' y='68' font-size='58' text-anchor='middle' fill='white' font-family='Arial'%3E%D0%9F%3C/text%3E%3C/svg%3E" />
+    <style>
+      :root{color-scheme:light;--ink:#261b2b;--muted:#786c7c;--purple:#641c75;--deep:#40104d;--pink:#ed4e9a;--line:#eee7f0;--soft:#faf7fb;--green:#197957;--red:#b2384d}
+      *{box-sizing:border-box}
+      [hidden]{display:none!important}
+      body{margin:0;background:linear-gradient(180deg,#f8f1fa 0,#fff 340px);color:var(--ink);font-family:"Segoe UI",Arial,"Noto Sans",sans-serif;font-size:16px;line-height:1.5}
+      button{font:inherit}
+      .wrap{width:min(100% - 32px,1000px);margin:0 auto;padding:34px 0 56px}
+      header{display:flex;align-items:center;gap:14px;margin:0 0 34px}
+      .brand{display:grid;place-items:center;width:48px;height:48px;border-radius:15px;background:var(--deep);color:white;font-size:25px;font-weight:800}
+      .brand-name{font-size:14px;color:var(--muted)}
+      h1{font-size:clamp(28px,5vw,42px);line-height:1.12;letter-spacing:-.035em;margin:0}
+      h2{font-size:clamp(23px,4vw,32px);line-height:1.2;margin:0 0 8px;letter-spacing:-.025em}
+      p{margin:0;color:var(--muted)}
+      .intro{margin-bottom:28px}
+      .intro p{margin-top:10px;max-width:620px}
+      .grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:15px}
+      .test-card{display:flex;flex-direction:column;align-items:flex-start;min-height:160px;padding:21px;border:1px solid var(--line);border-radius:20px;background:#fff;box-shadow:0 7px 24px #33103e0a;text-align:left;cursor:pointer;transition:transform .16s ease,border-color .16s ease,box-shadow .16s ease}
+      .test-card:hover{transform:translateY(-2px);border-color:#d8b5df;box-shadow:0 12px 28px #33103e13}
+      .test-card:focus-visible,.answer:focus-visible,.primary:focus-visible,.secondary:focus-visible{outline:3px solid #efa6d1;outline-offset:3px}
+      .card-no{display:grid;place-items:center;width:38px;height:38px;margin-bottom:17px;border-radius:12px;background:#f5e9f8;color:var(--purple);font-weight:800}
+      .card-title{font-weight:750;font-size:18px;color:var(--ink)}
+      .card-meta{font-size:14px;color:var(--muted);margin-top:4px}
+      .view{display:none}
+      .view.active{display:block}
+      .topline{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:20px}
+      .secondary{border:1px solid var(--line);border-radius:12px;padding:9px 14px;background:white;color:var(--ink);cursor:pointer}
+      .range{font-size:14px;font-weight:700;color:var(--purple);background:#f5e9f8;padding:7px 12px;border-radius:999px;white-space:nowrap}
+      .progress-label{display:flex;justify-content:space-between;gap:12px;font-size:14px;color:var(--muted);margin:8px 0}
+      .setup-card{margin-top:22px;padding:clamp(20px,5vw,34px);border:1px solid var(--line);border-radius:22px;background:white;box-shadow:0 10px 36px #33103e0a}
+      .setup-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:11px;margin:19px 0 24px}
+      .time-option{display:flex;align-items:center;gap:12px;min-height:60px;padding:14px;border:1px solid var(--line);border-radius:14px;background:#fff;cursor:pointer}
+      .time-option:has(input:checked){border-color:var(--purple);background:#f7eff9;box-shadow:inset 0 0 0 1px var(--purple)}
+      .time-option input{accent-color:var(--purple);width:18px;height:18px}
+      .timer-row{display:flex;justify-content:flex-end;min-height:28px;margin-top:7px;color:var(--purple);font-weight:750;font-variant-numeric:tabular-nums}
+      .progress{height:8px;background:#eee8f0;border-radius:99px;overflow:hidden}
+      .progress span{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--purple),var(--pink));border-radius:99px;transition:width .2s ease}
+      .question-card{margin-top:20px;padding:clamp(20px,5vw,34px);border:1px solid var(--line);border-radius:22px;background:white;box-shadow:0 10px 36px #33103e0a}
+      .question-number{font-size:13px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--purple);margin-bottom:11px}
+      .question-text{font-size:clamp(19px,3vw,25px);line-height:1.45;font-weight:650;white-space:pre-wrap}
+      .answers{display:grid;gap:10px;margin-top:24px}
+      .answer{display:flex;align-items:flex-start;gap:13px;width:100%;padding:14px 16px;border:1px solid var(--line);border-radius:15px;background:#fff;text-align:left;cursor:pointer;color:var(--ink);transition:background .14s,border-color .14s}
+      .answer:hover{background:var(--soft);border-color:#cfb3d5}
+      .answer.selected{border-color:var(--purple);background:#f7eff9;box-shadow:inset 0 0 0 1px var(--purple)}
+      .letter{display:grid;place-items:center;flex:0 0 29px;height:29px;border-radius:9px;background:#f1ebf3;color:var(--purple);font-weight:800;font-size:14px}
+      .answer.selected .letter{background:var(--purple);color:#fff}
+      .answer-text{padding-top:2px;white-space:pre-wrap}
+      .nav{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:18px}
+      .nav-right{display:flex;gap:10px}
+      .primary{border:0;border-radius:13px;padding:12px 18px;background:var(--deep);color:#fff;font-weight:750;cursor:pointer}
+      .primary:hover{background:var(--purple)}
+      .primary:disabled{opacity:.45;cursor:not-allowed}
+      .result{text-align:center;padding:30px 20px 18px}
+      .score{font-size:clamp(58px,12vw,92px);line-height:1.05;color:var(--purple);font-weight:850;letter-spacing:-.06em;margin:16px 0 8px}
+      .result-sub{font-size:18px;color:var(--muted)}
+      .stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:22px 0 4px}
+      .stat{padding:14px 10px;border-radius:14px;background:var(--soft)}
+      .stat-value{font-size:22px;font-weight:850;color:var(--deep)}
+      .stat-label{font-size:12px;color:var(--muted)}
+      .result-actions{display:flex;justify-content:center;gap:10px;margin-top:24px;flex-wrap:wrap}
+      .review{display:grid;gap:12px;margin-top:26px;text-align:left}
+      .review-item{padding:17px;border:1px solid var(--line);border-left:4px solid var(--red);border-radius:13px;background:#fff}
+      .review-item.correct{border-left-color:var(--green)}
+      .review-q{font-weight:750;margin-bottom:8px;white-space:pre-wrap}
+      .review-line{font-size:14px;color:var(--muted);margin-top:4px;white-space:pre-wrap}
+      .review-line.good{color:var(--green)}
+      .review-line.bad{color:var(--red)}
+      .empty{padding:24px;text-align:center;color:var(--muted)}
+      footer{margin-top:34px;padding-top:18px;border-top:1px solid var(--line);font-size:13px;color:var(--muted)}
+      @media(max-width:760px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}.wrap{padding-top:24px}}
+      @media(max-width:480px){.grid{grid-template-columns:1fr;gap:10px}.test-card{min-height:120px;padding:17px}.card-no{margin-bottom:10px}.topline{align-items:flex-start}.nav{align-items:stretch}.nav .primary,.nav .secondary{padding:11px 13px}.question-card{padding:19px}.answer{padding:12px}}
+      @media(max-width:520px){.setup-options{grid-template-columns:1fr}.stats{grid-template-columns:repeat(2,minmax(0,1fr))}}
+      @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition:none!important}}
+    </style>
+  </head>
+  <body>
+    <main class="wrap">
+      <header><div class="brand" aria-hidden="true">П</div><div><div class="brand-name">Білімді тексеру</div><h1>Психокоррекция</h1></div></header>
+      <section id="home" class="view active" aria-labelledby="home-title">
+        <div class="intro"><h2 id="home-title">Тестті таңдаңыз</h2><p>300 сұрақ алты бөлімге бөлінген. Әр тестте 50 сұрақ бар. Соңында нәтижеңіз 50 балл бойынша көрсетіліп, қате жауаптар беріледі.</p></div>
+        <div id="test-list" class="grid" aria-label="Алты тест"></div>
+      </section>
+      <section id="setup" class="view" aria-labelledby="setup-heading">
+        <div class="topline"><button id="setup-home" class="secondary" type="button">← Тесттерге оралу</button><span id="setup-range" class="range"></span></div>
+        <div class="setup-card">
+          <h2 id="setup-heading">Уақытты таңдаңыз</h2>
+          <p>Уақыт бүкіл тестке беріледі. Уақыт біткенде нәтиже автоматты түрде есептеледі.</p>
+          <div class="setup-options" role="radiogroup" aria-label="Тест уақыты">
+            <label class="time-option"><input type="radio" name="time-limit" value="10"><span>10 минут</span></label>
+            <label class="time-option"><input type="radio" name="time-limit" value="15" checked><span>15 минут</span></label>
+            <label class="time-option"><input type="radio" name="time-limit" value="20"><span>20 минут</span></label>
+            <label class="time-option"><input type="radio" name="time-limit" value="30"><span>30 минут</span></label>
+            <label class="time-option"><input type="radio" name="time-limit" value="0"><span>Уақыт шектеусіз</span></label>
+          </div>
+          <button id="start-quiz" class="primary" type="button">Тестті бастау →</button>
+        </div>
+      </section>
+      <section id="quiz" class="view" aria-labelledby="quiz-heading">
+        <div class="topline"><button id="back-home" class="secondary" type="button">← Тесттерге оралу</button><span id="range-badge" class="range"></span></div>
+        <h2 id="quiz-heading">Тест</h2>
+        <div class="progress-label"><span id="progress-text"></span><span id="answered-text"></span></div>
+        <div class="progress" role="progressbar" aria-label="Тест барысы" aria-valuemin="0" aria-valuemax="50" aria-valuenow="0"><span id="progress-fill"></span></div>
+        <div id="timer-row" class="timer-row" aria-live="polite"></div>
+        <article class="question-card">
+          <div id="question-number" class="question-number"></div>
+          <div id="question-text" class="question-text"></div>
+          <div id="answers" class="answers" role="radiogroup" aria-label="Жауап нұсқалары"></div>
+        </article>
+        <div class="nav"><button id="previous" class="secondary" type="button">← Артқа</button><div class="nav-right"><button id="next" class="primary" type="button">Келесі →</button><button id="submit" class="primary" type="button" hidden>Тестті аяқтау</button></div></div>
+      </section>
+      <section id="results" class="view" aria-labelledby="result-heading">
+        <div class="topline"><button id="results-home" class="secondary" type="button">← Тесттерге оралу</button><span id="result-range" class="range"></span></div>
+        <div class="question-card result">
+          <h2 id="result-heading">Тест аяқталды</h2><div id="score" class="score"></div><p id="score-message" class="result-sub"></p>
+          <div class="stats" aria-label="Тест нәтижелері">
+            <div class="stat"><div id="percent" class="stat-value"></div><div class="stat-label">Пайыз</div></div>
+            <div class="stat"><div id="correct-count" class="stat-value"></div><div class="stat-label">Дұрыс</div></div>
+            <div class="stat"><div id="wrong-count" class="stat-value"></div><div class="stat-label">Қате</div></div>
+            <div class="stat"><div id="unanswered-count" class="stat-value"></div><div class="stat-label">Жауапсыз</div></div>
+          </div>
+          <p id="elapsed" class="result-sub"></p>
+          <p id="timeout-note" class="result-sub" hidden></p>
+          <div class="result-actions"><button id="retry" class="primary" type="button">Қайта тапсыру</button><button id="review-toggle" class="secondary" type="button">Жауаптарды көрсету</button></div>
+        </div>
+        <div id="review" class="review" hidden></div>
+      </section>
+      <footer>Таңдалған жауап басқа сұраққа өткенде сақталады. Жауаптар бастапқы тест кілті бойынша тексеріледі.</footer>
+    </main>
+    <script>
+      const ranges = Array.from({length:6}, (_,i)=>({start:i*50+1,end:i*50+50}));
+      const list = document.querySelector('#test-list');
+      const views = [...document.querySelectorAll('.view')];
+      const state = {range:null, questions:[], index:0, answers:new Map(), completed:false, limitMinutes:15, startedAt:0, deadline:0, timerId:null, timedOut:false};
+      const letters = ['А','Б','В','Г','Д'];
+      let data = [];
+      const show = id => { views.forEach(v=>v.classList.toggle('active',v.id===id)); window.scrollTo({top:0,behavior:'smooth'}); };
+      const rangeText = r => `${r.start}–${r.end}`;
+      function renderHome(){
+        list.replaceChildren();
+        ranges.forEach((r,i)=>{
+          const button=document.createElement('button'); button.type='button'; button.className='test-card';
+          button.setAttribute('aria-label',`${rangeText(r)} сұрақтар тесті, 50 сұрақ`);
+          button.innerHTML=`<span class="card-no">${String(i+1).padStart(2,'0')}</span><span class="card-title">${rangeText(r)} сұрақтар</span><span class="card-meta">50 сұрақ · нәтиже 50 баллмен</span>`;
+          button.addEventListener('click',()=>selectTest(r)); list.append(button);
+        });
+      }
+      function selectTest(r){state.range=r;document.querySelector('#setup-range').textContent=rangeText(r);show('setup');}
+      function start(){
+        if(state.timerId)clearInterval(state.timerId);
+        state.questions=data.filter(q=>q.number>=state.range.start&&q.number<=state.range.end);
+        state.index=0;state.answers=new Map();state.completed=false;state.timedOut=false;
+        state.limitMinutes=Number(document.querySelector('input[name="time-limit"]:checked').value);
+        state.startedAt=Date.now();state.deadline=state.limitMinutes?state.startedAt+state.limitMinutes*60_000:0;
+        document.querySelector('#quiz-heading').textContent=`${rangeText(state.range)} сұрақтар тесті`;
+        document.querySelector('#range-badge').textContent=rangeText(state.range);
+        show('quiz');renderQuestion();updateTimer();
+        if(state.limitMinutes)state.timerId=setInterval(updateTimer,250);
+      }
+      function updateTimer(){
+        const box=document.querySelector('#timer-row');
+        if(!state.limitMinutes){box.textContent='Уақыт шектеусіз';return;}
+        const seconds=Math.max(0,Math.ceil((state.deadline-Date.now())/1000));
+        box.textContent=`Қалған уақыт: ${String(Math.floor(seconds/60)).padStart(2,'0')}:${String(seconds%60).padStart(2,'0')}`;
+        if(seconds===0&&!state.completed){state.timedOut=true;finish();}
+      }
+      function renderQuestion(){
+        const q=state.questions[state.index]; if(!q)return;
+        document.querySelector('#question-number').textContent=`СҰРАҚ ${q.number}`;
+        document.querySelector('#question-text').textContent=q.question;
+        const box=document.querySelector('#answers');box.replaceChildren();
+        q.options.forEach((option,i)=>{const button=document.createElement('button');button.type='button';button.setAttribute('role','radio');button.className='answer'+(state.answers.get(q.number)===i?' selected':'');button.setAttribute('aria-checked',state.answers.get(q.number)===i?'true':'false');button.innerHTML=`<span class="letter">${letters[i]}</span><span class="answer-text"></span>`;button.querySelector('.answer-text').textContent=option;button.addEventListener('click',()=>{state.answers.set(q.number,i);renderQuestion();});box.append(button);});
+        const count=state.answers.size;document.querySelector('#progress-text').textContent=`${state.index+1} / 50 сұрақ`;document.querySelector('#answered-text').textContent=`Жауап берілді: ${count} / 50`;document.querySelector('#progress-fill').style.width=`${(state.index+1)*2}%`;document.querySelector('.progress').setAttribute('aria-valuenow',String(state.index+1));
+        document.querySelector('#previous').disabled=state.index===0;document.querySelector('#next').hidden=state.index===49;document.querySelector('#submit').hidden=state.index!==49;document.querySelector('#submit').textContent=count===50?'Тестті аяқтау':`Аяқтау · жауап жоқ: ${50-count}`;
+      }
+      function finish(){
+        if(state.completed)return;
+        state.completed=true;if(state.timerId){clearInterval(state.timerId);state.timerId=null;}
+        const correct=state.questions.reduce((sum,q)=>sum+(state.answers.get(q.number)===q.correct?1:0),0);
+        const unanswered=state.questions.filter(q=>!state.answers.has(q.number)).length;
+        const wrong=50-correct-unanswered;const percent=Math.round(correct/50*100);
+        const elapsedSeconds=Math.max(0,Math.floor((Date.now()-state.startedAt)/1000));
+        document.querySelector('#result-range').textContent=rangeText(state.range);
+        document.querySelector('#score').textContent=`${correct} / 50`;
+        document.querySelector('#percent').textContent=`${percent}%`;
+        document.querySelector('#correct-count').textContent=String(correct);
+        document.querySelector('#wrong-count').textContent=String(wrong);
+        document.querySelector('#unanswered-count').textContent=String(unanswered);
+        document.querySelector('#elapsed').textContent=`Жұмсалған уақыт: ${Math.floor(elapsedSeconds/60)} мин ${elapsedSeconds%60} сек`;
+        document.querySelector('#timeout-note').hidden=!state.timedOut;
+        document.querySelector('#timeout-note').textContent='Уақыт аяқталды. Нәтиже берілген жауаптар бойынша есептелді.';
+        document.querySelector('#score-message').textContent=percent===100?'Керемет нәтиже!':percent>=70?'Жақсы нәтиже. Қате жауаптарды қарап шығыңыз.':'Материалды қайталап, тестті қайта тапсырып көріңіз.';
+        document.querySelector('#review').hidden=true;document.querySelector('#review-toggle').textContent='Жауаптарды көрсету';renderReview();show('results');
+      }
+      function renderReview(){const box=document.querySelector('#review');box.replaceChildren();state.questions.forEach(q=>{const selected=state.answers.get(q.number);if(selected===q.correct)return;const item=document.createElement('article');item.className='review-item';const title=document.createElement('div');title.className='review-q';title.textContent=`${q.number}. ${q.question}`;item.append(title);const yours=document.createElement('div');yours.className='review-line '+(selected===undefined?'':'bad');yours.textContent=selected===undefined?'Сіздің жауабыңыз: жауап берілмеді':`Сіздің жауабыңыз: ${letters[selected]}) ${q.options[selected]}`;const key=document.createElement('div');key.className='review-line good';key.textContent=`Дұрыс жауап: ${letters[q.correct]}) ${q.options[q.correct]}`;item.append(yours,key);box.append(item);});if(!box.children.length){const done=document.createElement('p');done.className='empty';done.textContent='Қате жоқ — барлық жауап дұрыс.';box.append(done);}}
+      document.querySelector('#setup-home').addEventListener('click',()=>show('home'));
+      document.querySelector('#start-quiz').addEventListener('click',start);
+      document.querySelector('#back-home').addEventListener('click',()=>{if(state.timerId){clearInterval(state.timerId);state.timerId=null;}show('home');});
+      document.querySelector('#results-home').addEventListener('click',()=>show('home'));
+      document.querySelector('#previous').addEventListener('click',()=>{if(state.index>0){state.index--;renderQuestion();}});
+      document.querySelector('#next').addEventListener('click',()=>{if(state.index<49){state.index++;renderQuestion();}});
+      document.querySelector('#submit').addEventListener('click',finish);
+      document.querySelector('#retry').addEventListener('click',()=>{document.querySelector('input[name="time-limit"][value="'+state.limitMinutes+'"]').checked=true;start();});
+      document.querySelector('#review-toggle').addEventListener('click',e=>{const box=document.querySelector('#review');box.hidden=!box.hidden;e.currentTarget.textContent=box.hidden?'Жауаптарды көрсету':'Жауаптарды жасыру';});
+      fetch('./data/questions.json').then(r=>{if(!r.ok)throw new Error('Сұрақтар жүктелмеді');return r.json();}).then(questions=>{if(!Array.isArray(questions)||questions.length!==300)throw new Error('Сұрақтар жиыны 300 сұрақтан тұруы керек');data=questions;renderHome();}).catch(error=>{list.innerHTML='';const message=document.createElement('p');message.className='empty';message.textContent=`Тесттер жүктелмеді: ${error.message}. Бетті жаңартыңыз.`;list.append(message);});
+    </script>
+  </body>
+</html>
